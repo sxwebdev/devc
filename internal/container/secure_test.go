@@ -55,11 +55,12 @@ func TestEnforceWorkspaceSecrets(t *testing.T) {
 		}
 	})
 
-	t.Run("mask not implemented", func(t *testing.T) {
+	t.Run("mask does not block startup", func(t *testing.T) {
+		// mask is applied at mount time, so pre-startup enforcement is a no-op
+		// even when protected files are present.
 		c := &types.DevcCustomization{WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: types.SecretsModeMask}}
-		err := enforceWorkspaceSecrets(ws, c)
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("expected mask to report not implemented, got %v", err)
+		if err := enforceWorkspaceSecrets(ws, c); err != nil {
+			t.Errorf("mask mode should not block startup, got %v", err)
 		}
 	})
 

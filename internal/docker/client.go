@@ -13,6 +13,7 @@ import (
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 	"golang.org/x/term"
 
@@ -132,6 +133,8 @@ func (c *Client) CreateAndStart(
 	workspaceFolder string,
 	agentProfiles []*agent.Profile,
 	configHash string,
+	networkName string,
+	extraEnv []string,
 ) error {
 	ctx := context.Background()
 
@@ -214,6 +217,9 @@ func (c *Client) CreateAndStart(
 			}
 		}
 	}
+
+	// Service-derived env (e.g. DATABASE_URL, REDIS_URL) injected by the caller.
+	env = append(env, extraEnv...)
 
 	labels := map[string]string{
 		"devc.managed":     "true",
@@ -320,13 +326,18 @@ func (c *Client) CreateAndStart(
 		env = append(env, skillsEnv)
 	}
 
-	// Read-only mounts for in-workspace secret files when the policy mode is
-	// "readonly": the workspace stays writable but each protected file is
-	// shadowed by a read-only bind mount.
+	// In-workspace secret handling. "readonly" pins each protected file
+	// read-only; "mask" shadows it with an empty file so the agent cannot read
+	// its contents. The workspace itself stays writable in both cases.
 	if roMounts, roErr := readonlySecretMounts(custom, workspaceFolder, wsTarget); roErr != nil {
 		return roErr
 	} else {
 		mounts = append(mounts, roMounts...)
+	}
+	if maskMounts, maskErr := maskSecretMounts(custom, workspaceFolder, wsTarget); maskErr != nil {
+		return maskErr
+	} else {
+		mounts = append(mounts, maskMounts...)
 	}
 
 	// SSH agent socket forwarding.
@@ -355,6 +366,13 @@ func (c *Client) CreateAndStart(
 	if profile.DropAllCaps {
 		hostCfg.CapDrop = []string{"ALL"}
 		hostCfg.CapAdd = profile.AddCaps
+	}
+
+	// Egress enforcement needs NET_ADMIN/NET_RAW to configure iptables inside
+	// the container's network namespace. The agent runs as a non-root user, so
+	// it cannot flush the rules the root init script installs.
+	if custom.Network != nil && custom.Network.Enforce && netModeAllowsEgressFilter(custom, profile) {
+		hostCfg.CapAdd = appendUnique(hostCfg.CapAdd, "NET_ADMIN", "NET_RAW")
 	}
 
 	// Resources
@@ -389,20 +407,52 @@ func (c *Client) CreateAndStart(
 	if custom.Network != nil && custom.Network.Mode != "" {
 		netMode = custom.Network.Mode
 	}
+	var netCfg *network.NetworkingConfig
 	switch netMode {
 	case "none":
 		hostCfg.NetworkMode = "none"
 	case "host":
 		hostCfg.NetworkMode = "host"
 	default:
-		hostCfg.NetworkMode = "bridge"
+		if networkName != "" {
+			// Join the per-project devc network so sibling services resolve by
+			// DNS alias (e.g. postgres:5432).
+			hostCfg.NetworkMode = container.NetworkMode(networkName)
+			netCfg = &network.NetworkingConfig{
+				EndpointsConfig: map[string]*network.EndpointSettings{
+					networkName: {},
+				},
+			}
+		} else {
+			hostCfg.NetworkMode = "bridge"
+		}
+	}
+
+	// Publish forwarded ports (frontend/backend dev servers) to the host. Host
+	// networking already exposes ports directly; "none" has no ports to publish.
+	if netMode != "none" && netMode != "host" {
+		bindings, exposed, portErr := parseForwardPorts(devCfg.ForwardPorts)
+		if portErr != nil {
+			return portErr
+		}
+		if len(bindings) > 0 {
+			hostCfg.PortBindings = bindings
+			if containerCfg.ExposedPorts == nil {
+				containerCfg.ExposedPorts = exposed
+			} else {
+				for p := range exposed {
+					containerCfg.ExposedPorts[p] = struct{}{}
+				}
+			}
+		}
 	}
 
 	// Create container
 	createResult, err := c.api.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
-		Config:     containerCfg,
-		HostConfig: hostCfg,
-		Name:       containerName,
+		Config:           containerCfg,
+		HostConfig:       hostCfg,
+		NetworkingConfig: netCfg,
+		Name:             containerName,
 	})
 	if err != nil {
 		return fmt.Errorf("creating container: %w", err)

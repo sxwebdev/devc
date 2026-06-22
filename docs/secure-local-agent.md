@@ -83,6 +83,8 @@ the rest of the preset.
 - Protected in-repo secret files when `workspaceSecretsPolicy.mode=fail`
   prevents startup
 - Ability to `git push` (blocked under `gitPolicy=commitOnly`)
+- Outbound network beyond the allowlist — only when `network.enforce=true` and
+  `iptables` is present (experimental)
 
 ### Not protected
 
@@ -124,12 +126,17 @@ Some repositories contain local secret files (`.env`, `secrets.yaml`,
 service-account JSON, `.npmrc`, …). This policy controls what happens when such
 files are present.
 
-| Mode       | Behavior                                                                                                       |
-| ---------- | -------------------------------------------------------------------------------------------------------------- |
-| `off`      | Do nothing (existing behavior).                                                                                |
-| `fail`     | Refuse to start and list the protected files. Recommended.                                                     |
-| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                                 |
-| `mask`     | Technically hide protected files from the agent. **Not implemented yet** — selecting it returns a clear error. |
+| Mode       | Behavior                                                                                                 |
+| ---------- | -------------------------------------------------------------------------------------------------------- |
+| `off`      | Do nothing (existing behavior).                                                                          |
+| `fail`     | Refuse to start and list the protected files. Recommended.                                               |
+| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                           |
+| `mask`     | Shadow each protected file with an empty file so the agent cannot read its contents (technical control). |
+
+`mask` is a real technical control: each matched file is bind-mounted over with
+an empty, read-only file, so the agent sees it as empty rather than seeing the
+secret. The workspace stays writable; only the matched files are shadowed. Files
+created after container start are not masked.
 
 - Matching is shell-glob by file base name.
 - `allowPatterns` exempts example/sample files (`.env.example`, etc.).
@@ -162,6 +169,49 @@ instruction.
 > **Limitation:** tools that call git via an absolute path (`/usr/bin/git`)
 > bypass the wrapper. This is a usability boundary, not a hardened sandbox.
 
+## Network egress enforcement (experimental)
+
+By default `restricted` is a standard bridge network with no outbound filtering —
+the domain allowlist is advisory. Set `network.enforce: true` to turn the
+allowlist into a real egress firewall:
+
+```json
+{
+  "network": {
+    "mode": "restricted",
+    "allowlist": ["api.anthropic.com", "internal.example.com"],
+    "enforce": true
+  }
+}
+```
+
+When enabled, after setup/install commands have run, `devc` installs an iptables
+OUTPUT firewall (as root) that defaults to **DROP** and allows only:
+
+- loopback and established/related connections,
+- DNS (port 53),
+- private networks (`127/8`, `10/8`, `172.16/12`, `192.168/16`) — needed for the
+  Docker resolver and sibling services,
+- the resolved IPv4 addresses of each agent profile's required domains plus your
+  `allowlist`.
+
+The agent runs as a non-root user, so it cannot flush these rules.
+
+> **Trade-off / caveats (read before enabling):**
+>
+> - The container is granted `NET_ADMIN` and `NET_RAW` capabilities so the root
+>   init script can program iptables. This weakens the otherwise minimal
+>   capability set; the protection relies on the agent being non-root.
+> - It requires `iptables` in the image. If `iptables` is missing the firewall is
+>   **skipped with a warning** (fail-open) — outbound traffic is not restricted.
+> - Domains are resolved to IPs at setup time. CDN/anycast services whose IPs
+>   rotate may become unreachable. Add domains conservatively and test.
+> - Behavior varies across Docker hosts (rootless, Docker Desktop, unusual
+>   networking). Verify on your setup.
+>
+> Because of these caveats, `enforce` is **opt-in** and is not turned on by the
+> `secure-local-agent` preset.
+
 ## Skills (`/skills`)
 
 A read-only skills directory can be mounted into the container:
@@ -190,23 +240,160 @@ path.
 
 ## Services (Postgres / Redis) and DBeaver
 
-Sibling service containers (Postgres, Redis) reachable from the agent by DNS
-name, and from the host on `127.0.0.1` ports, are **planned** and not yet part
-of this milestone. The `services` config is parsed but not yet executed. Once
-available, the intended model is:
+Sibling service containers run alongside the agent, reachable from the agent by
+DNS name and from the host on `127.0.0.1` ports. The agent never receives the
+host Docker socket — `devc` manages the service containers from the host.
 
-- `devc` (on the host) manages the service containers — the agent container does
-  **not** receive the Docker socket.
-- The agent connects via container DNS names (`postgres:5432`, `redis:6379`).
-- The host connects via published localhost ports (e.g. DBeaver →
-  `127.0.0.1:54321`).
+```json
+{
+  "services": {
+    "postgres": {
+      "enabled": true,
+      "image": "postgres:16",
+      "containerPort": 5432,
+      "hostPort": 54321,
+      "hostIP": "127.0.0.1",
+      "env": {
+        "POSTGRES_USER": "app",
+        "POSTGRES_PASSWORD": "app",
+        "POSTGRES_DB": "app"
+      },
+      "volumes": [
+        { "name": "postgres-data", "target": "/var/lib/postgresql/data" }
+      ]
+    },
+    "redis": {
+      "enabled": true,
+      "image": "redis:7",
+      "containerPort": 6379,
+      "hostPort": 63791,
+      "hostIP": "127.0.0.1"
+    }
+  }
+}
+```
+
+Behavior:
+
+- A per-project bridge network (`devc-net-<container>`) is created; the agent and
+  service containers join it. Services get DNS aliases matching their keys.
+- The agent connects via DNS: `postgres:5432`, `redis:6379`.
+- Ports publish to `127.0.0.1` only by default (set `hostIP`/`hostPort`).
+- For well-known services, connection-string env vars are injected into the
+  agent: `DATABASE_URL=postgresql://app:app@postgres:5432/app` and
+  `REDIS_URL=redis://redis:6379`.
+- Services and the network are removed on `devc down` / `devc clean`. Named
+  volumes are **preserved** (delete them manually with `docker volume rm` if you
+  want a clean slate).
+
+### Connect from the host
+
+DBeaver / `psql`:
+
+```text
+Host: 127.0.0.1
+Port: 54321
+Database: app
+User: app
+Password: app
+```
+
+Redis:
+
+```text
+Host: 127.0.0.1
+Port: 63791
+```
+
+## Accessing your app (frontend / backend) from the host
+
+Dev servers the agent runs **inside** the container (a frontend on `:3000`, a
+backend API on `:8080`, …) are reachable from your host browser/tools by
+publishing their ports with the standard devcontainer `forwardPorts` field.
+Ports publish to `127.0.0.1` only by default.
+
+```json
+{
+  "name": "my-app",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "forwardPorts": [3000, "8080:8080"],
+  "customizations": {
+    "devc": {
+      "preset": "secure-local-agent",
+      "agent": "claude"
+    }
+  }
+}
+```
+
+`forwardPorts` entry forms:
+
+| Entry                   | Result                                          |
+| ----------------------- | ----------------------------------------------- |
+| `3000`                  | `127.0.0.1:3000` on the host → container `3000` |
+| `"8080:3000"`           | `127.0.0.1:8080` on the host → container `3000` |
+| `"127.0.0.1:8080:3000"` | explicit host IP → container `3000`             |
+| `"5353/udp"`            | UDP port                                        |
+
+Inside the container, start your servers bound to `0.0.0.0` (not `127.0.0.1`) so
+the published ports are reachable from the host:
+
+```bash
+# inside the container (devc exec or the attached shell)
+npm run dev -- --host 0.0.0.0 --port 3000      # frontend
+go run ./cmd/api                                # backend listening on 0.0.0.0:8080
+```
+
+Then from the host:
+
+```text
+Frontend:  http://localhost:3000
+Backend:   http://localhost:8080
+```
+
+The backend talks to the database over the container network using the injected
+`DATABASE_URL` (`postgresql://app:app@postgres:5432/app`) — no host ports needed
+for service-to-service traffic.
+
+> **Tips**
+>
+> - Bind dev servers to `0.0.0.0`. A server bound to `127.0.0.1` inside the
+>   container is not reachable from the host even when the port is published.
+> - Changing `forwardPorts` changes the container's config hash, so `devc up`
+>   offers to rebuild the container to apply new port mappings.
+> - No host browser needed? You can also reach a server without publishing:
+>   `devc exec -- curl -s http://localhost:3000`.
+
+## Custom base image
+
+The secure workflow works with any image that provides the non-root `vscode`
+user (uid/gid `1000`). To give the agent a richer toolchain, point `image` at
+your own build:
+
+```json
+{
+  "image": "agent-dev-base:latest",
+  "customizations": { "devc": { "preset": "secure-local-agent", "agent": "claude" } }
+}
+```
+
+A ready-to-build polyglot example (C/C++, Go, Node, Python + common CLI tools)
+lives in [`examples/images/polyglot-agent-dev`](../examples/images/polyglot-agent-dev):
+
+```bash
+docker build -t agent-dev-base:latest examples/images/polyglot-agent-dev
+```
+
+If you enable `network.enforce`, make sure your image includes `iptables` (and
+`getent`/`dnsutils`), or egress filtering will be skipped with a warning.
 
 ## Known limitations
 
-- `workspaceSecretsPolicy.mode=mask` is not implemented yet.
-- Service containers are not implemented yet.
-- Network egress is not filtered to an allowlist yet; `restricted` is a standard
-  bridge network. Treat outbound network access as open.
+- `readonly` and `mask` secrets only cover files present at container creation
+  time; files created later are not protected.
+- Service containers are not started when the security profile disables
+  networking (`strict`); they need a bridge network.
+- Egress filtering (`network.enforce`) is experimental, opt-in, fail-open when
+  `iptables` is missing, and resolves domains to IPs at setup time. Without it,
+  outbound network access is open.
 - The `git push` wrapper can be bypassed by absolute-path git invocations.
-- `readonly` secrets and `mask` only cover files present at container creation
-  time.

@@ -105,6 +105,59 @@ func TestReadonlySecretMounts(t *testing.T) {
 	}
 }
 
+func TestMaskSecretMounts(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, ".env"), []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	custom := &types.DevcCustomization{
+		WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: types.SecretsModeMask},
+	}
+
+	mounts, err := maskSecretMounts(custom, ws, "/workspaces/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mask mount, got %d", len(mounts))
+	}
+	m := mounts[0]
+	if !m.ReadOnly {
+		t.Error("mask mount must be read-only")
+	}
+	if m.Target != "/workspaces/app/.env" {
+		t.Errorf("unexpected target %q", m.Target)
+	}
+	// The source must be an existing, empty file (not the real secret).
+	if m.Source == filepath.Join(ws, ".env") {
+		t.Error("mask source must not be the real secret file")
+	}
+	info, statErr := os.Stat(m.Source)
+	if statErr != nil {
+		t.Fatalf("mask source should exist: %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Errorf("mask source should be empty, got size %d", info.Size())
+	}
+}
+
+func TestMaskSecretMounts_OnlyForMaskMode(t *testing.T) {
+	ws := t.TempDir()
+	_ = os.WriteFile(filepath.Join(ws, ".env"), []byte("X=1"), 0o644)
+
+	custom := &types.DevcCustomization{
+		WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: types.SecretsModeFail},
+	}
+	mounts, err := maskSecretMounts(custom, ws, "/workspaces/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mounts != nil {
+		t.Errorf("expected no mounts for fail mode, got %v", mounts)
+	}
+}
+
 func TestReadonlySecretMounts_OnlyForReadonlyMode(t *testing.T) {
 	ws := t.TempDir()
 	_ = os.WriteFile(filepath.Join(ws, ".env"), []byte("X=1"), 0o644)

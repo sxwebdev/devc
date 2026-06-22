@@ -20,6 +20,7 @@ type configSnapshot struct {
 	PostCreateCommand any               `json:"postCreateCommand,omitempty"`
 	OnCreateCommand   any               `json:"onCreateCommand,omitempty"`
 	ContainerEnv      map[string]string `json:"containerEnv,omitempty"`
+	ForwardPorts      []any             `json:"forwardPorts,omitempty"`
 	EnvPassthrough    []string          `json:"envPassthrough,omitempty"`
 	ResourcesCPUs     string            `json:"cpus,omitempty"`
 	ResourcesMemory   string            `json:"memory,omitempty"`
@@ -28,6 +29,14 @@ type configSnapshot struct {
 	CredentialPolicy  string            `json:"credentialPolicy,omitempty"`
 	GitPolicy         string            `json:"gitPolicy,omitempty"`
 	Skills            *skillsSnapshot   `json:"skills,omitempty"`
+	Services          []serviceSnapshot `json:"services,omitempty"`
+}
+
+type serviceSnapshot struct {
+	Name          string `json:"name"`
+	Image         string `json:"image,omitempty"`
+	ContainerPort int    `json:"containerPort,omitempty"`
+	HostPort      int    `json:"hostPort,omitempty"`
 }
 
 type skillsSnapshot struct {
@@ -56,6 +65,27 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 		ContainerEnv:      devCfg.ContainerEnv,
 		CredentialPolicy:  custom.CredentialPolicy,
 		GitPolicy:         custom.GitPolicy,
+		ForwardPorts:      devCfg.ForwardPorts,
+	}
+
+	if len(custom.Services) > 0 {
+		names := make([]string, 0, len(custom.Services))
+		for name := range custom.Services {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			svc := custom.Services[name]
+			if svc == nil || !svc.Enabled {
+				continue
+			}
+			snap.Services = append(snap.Services, serviceSnapshot{
+				Name:          name,
+				Image:         svc.Image,
+				ContainerPort: svc.ContainerPort,
+				HostPort:      svc.HostPort,
+			})
+		}
 	}
 
 	if custom.Skills != nil && custom.Skills.Enabled {

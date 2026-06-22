@@ -242,5 +242,32 @@ func secureDevcConfig(presetName string) map[string]any {
 			"readonly": true,
 			"required": false,
 		},
+		"services": map[string]any{
+			"postgres": map[string]any{
+				"enabled":       true,
+				"image":         "postgres:16",
+				"containerPort": 5432,
+				"hostPort":      54321,
+				"hostIP":        "127.0.0.1",
+				"env": map[string]any{
+					"POSTGRES_USER":     "app",
+					"POSTGRES_PASSWORD": "app",
+					"POSTGRES_DB":       "app",
+				},
+				"volumes": []any{
+					map[string]any{"name": "postgres-data", "target": "/var/lib/postgresql/data"},
+				},
+			},
+			"redis": map[string]any{
+				"enabled":       true,
+				"image":         "redis:7",
+				"containerPort": 6379,
+				"hostPort":      63791,
+				"hostIP":        "127.0.0.1",
+				"volumes": []any{
+					map[string]any{"name": "redis-data", "target": "/data"},
+				},
+			},
+		},
 	}
 }

@@ -137,6 +137,10 @@ type NetworkConfig struct {
 	Mode      string   `json:"mode,omitempty"` // none, restricted, host
 	Allowlist []string `json:"allowlist,omitempty"`
 	Denylist  []string `json:"denylist,omitempty"`
+	// Enforce turns the allowlist into a real egress firewall (default-DROP
+	// OUTPUT with only allowlisted domains permitted). Requires iptables in the
+	// image and adds NET_ADMIN/NET_RAW capabilities. Experimental, opt-in.
+	Enforce bool `json:"enforce,omitempty"`
 }
 
 type ResourceConfig struct {

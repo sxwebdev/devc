@@ -219,7 +219,24 @@ func (m *Manager) createContainer(
 		}
 	}
 
-	if err := m.Docker.CreateAndStart(containerName, devCfg, custom, workspaceFolder, agentProfiles, configHash); err != nil {
+	// Start sibling service containers (and their shared network) before the
+	// agent so its DNS names and connection-string env vars resolve.
+	networkName := ""
+	var svcEnv []string
+	if servicesEnabled(custom) {
+		if secProfile.Network.Mode == "none" {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: services are enabled but security profile disables networking; services will be unreachable\n")
+		} else {
+			networkName = serviceNetworkName(containerName)
+			if err := m.setupServices(containerName, networkName, custom); err != nil {
+				devCfg.Image = origImage
+				return fmt.Errorf("setting up services: %w", err)
+			}
+			svcEnv = serviceEnv(custom)
+		}
+	}
+
+	if err := m.Docker.CreateAndStart(containerName, devCfg, custom, workspaceFolder, agentProfiles, configHash, networkName, svcEnv); err != nil {
 		devCfg.Image = origImage
 		return fmt.Errorf("creating container: %w", err)
 	}
@@ -286,7 +303,31 @@ func (m *Manager) createContainer(
 		m.linkAgentBinary(containerName, p, containerHome)
 	}
 
+	// Apply egress firewall last, after installs/lifecycle have run, so setup
+	// traffic isn't blocked but the agent's own traffic is restricted.
+	if custom.Network != nil && custom.Network.Enforce && secProfile.Network.Mode != "none" && secProfile.Network.Mode != "host" {
+		m.applyEgressFirewall(containerName, agentProfiles, custom)
+	}
+
 	return nil
+}
+
+// applyEgressFirewall installs the allowlist-based OUTPUT firewall as root.
+func (m *Manager) applyEgressFirewall(containerName string, agentProfiles []*agent.Profile, custom *types.DevcCustomization) {
+	var profileDomains []string
+	for _, p := range agentProfiles {
+		profileDomains = append(profileDomains, p.NetworkAllow...)
+	}
+	var allowlist []string
+	if custom.Network != nil {
+		allowlist = custom.Network.Allowlist
+	}
+	script := buildFirewallScript(egressDomains(profileDomains, allowlist))
+
+	fmt.Println("[devc] Applying egress firewall (network.enforce)")
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", script}, docker.ExecOptions{User: "root"}); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not apply egress firewall: %v\n", err)
+	}
 }
 
 // Exec runs a command in the container for the given workspace.
@@ -373,6 +414,9 @@ func (m *Manager) Down(workspaceFolder string, force bool) error {
 		return err
 	}
 
+	// Remove sibling services and the shared network. Named volumes are kept.
+	m.cleanupServices(containerName)
+
 	m.Session.Clean(containerName)
 	fmt.Printf("Container %s removed\n", containerName)
 	return nil
@@ -410,6 +454,7 @@ func (m *Manager) Clean(dryRun bool) ([]string, error) {
 				_, _ = fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", c.Name, err)
 				continue
 			}
+			m.cleanupServices(c.Name)
 			m.Session.Clean(c.Name)
 			removed = append(removed, c.Name)
 		}
@@ -485,10 +530,10 @@ func enforceWorkspaceSecrets(workspaceFolder string, custom *types.DevcCustomiza
 	}
 
 	switch mode {
-	case types.SecretsModeOff, types.SecretsModeReadonly:
+	case types.SecretsModeOff, types.SecretsModeReadonly, types.SecretsModeMask:
+		// readonly and mask are technical controls applied at mount time during
+		// container creation; nothing to enforce before startup.
 		return nil
-	case types.SecretsModeMask:
-		return fmt.Errorf("workspaceSecretsPolicy mode %q is not implemented yet; use \"fail\", \"readonly\", or \"off\"", mode)
 	case types.SecretsModeFail:
 		findings, err := secrets.Scan(workspaceFolder, sp.Patterns, sp.AllowPatterns)
 		if err != nil {

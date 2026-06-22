@@ -174,49 +174,8 @@ func (c *Client) CreateAndStart(
 		}
 	}
 
-	// Forward host env vars for auth (API keys, tokens), deduplicated.
-	// Agent-profile passthroughs are gated by AllowAgentCreds; project-level
-	// passthroughs by AllowCustomEnvPass. Under agentOnly, git/forge/cloud
-	// credential names are stripped even from agent passthroughs.
-	passthroughSet := make(map[string]bool)
-	if cred.AllowAgentCreds {
-		for _, p := range agentProfiles {
-			for _, envName := range p.EnvPassthrough {
-				if cred.FilterGitCloud && credpolicy.IsGitCloudCredEnv(envName) {
-					continue
-				}
-				passthroughSet[envName] = true
-			}
-		}
-	}
-	if cred.AllowCustomEnvPass && custom.EnvPassthrough != nil {
-		for _, envName := range custom.EnvPassthrough {
-			passthroughSet[envName] = true
-		}
-	}
-	for envName := range passthroughSet {
-		if val, ok := os.LookupEnv(envName); ok {
-			env = append(env, envName+"="+val)
-		}
-	}
-
-	// Resolve agent credentials from host (Keychain, credential files, etc.)
-	credSet := make(map[string]bool) // deduplicate credential env vars
-	if cred.AllowAgentCreds {
-		for _, p := range agentProfiles {
-			creds := agent.ResolveCredentials(p)
-			for _, e := range creds.Env {
-				key := strings.SplitN(e, "=", 2)[0]
-				if cred.FilterGitCloud && credpolicy.IsGitCloudCredEnv(key) {
-					continue
-				}
-				if !credSet[key] {
-					credSet[key] = true
-					env = append(env, e)
-				}
-			}
-		}
-	}
+	// Credential and passthrough env, gated by the policy. See buildCredentialEnv.
+	env = append(env, buildCredentialEnv(cred, agentProfiles, custom.EnvPassthrough, os.LookupEnv, agent.ResolveCredentials)...)
 
 	// Service-derived env (e.g. DATABASE_URL, REDIS_URL) injected by the caller.
 	env = append(env, extraEnv...)
@@ -267,56 +226,9 @@ func (c *Client) CreateAndStart(
 	home, _ := os.UserHomeDir()
 	containerHome := ContainerHomeDir(ctx, c.api, devCfg.Image, effectiveUser)
 
-	// Only bind-mount agent config entries that are NOT marked Copy.
-	// Copy entries are handled after container start via docker cp.
-	// Under credential policies that withhold host agent config, skip these
-	// host-linked bind mounts entirely.
-	mountedTargets := make(map[string]bool) // deduplicate across profiles
-	if home != "" && cred.AllowHostAgentConfig {
-		for _, p := range agentProfiles {
-			for _, m := range p.ConfigMounts {
-				if m.Copy {
-					continue // will be copied into container after start
-				}
-				src := home + "/" + m.HostPath
-				if _, statErr := os.Stat(src); statErr != nil {
-					continue
-				}
-				dst := m.ContainerPath
-				if dst == "" {
-					dst = containerHome + "/" + m.HostPath
-				}
-				if mountedTargets[dst] {
-					continue
-				}
-				mountedTargets[dst] = true
-				mounts = append(mounts, mount.Mount{
-					Type:     mount.TypeBind,
-					Source:   src,
-					Target:   dst,
-					ReadOnly: m.ReadOnly,
-				})
-			}
-		}
-	}
-
-	// Common auth mounts (SSH keys, git config) — always read-only.
-	// Gated by the credential policy (withheld under none/agentOnly).
-	if home != "" && cred.AllowCommonAuth {
-		for _, m := range agent.CommonAuthMounts() {
-			src := home + "/" + m.HostPath
-			if _, statErr := os.Stat(src); statErr != nil {
-				continue
-			}
-			dst := containerHome + "/" + m.HostPath
-			mounts = append(mounts, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   src,
-				Target:   dst,
-				ReadOnly: true,
-			})
-		}
-	}
+	// Host-credential bind mounts (agent config + SSH keys/git config), gated by
+	// the credential policy. See buildCredentialMounts.
+	mounts = append(mounts, buildCredentialMounts(cred, agentProfiles, home, containerHome, agent.CommonAuthMounts(), fileExists)...)
 
 	// Read-only skills mount.
 	if skillsMount, skillsEnv, skillsErr := resolveSkillsMount(custom.Skills, home); skillsErr != nil {

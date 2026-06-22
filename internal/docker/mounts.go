@@ -172,6 +172,12 @@ func appendUnique(s []string, items ...string) []string {
 	return s
 }
 
+// fileExists reports whether a host path exists.
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 // expandHome replaces a leading ~ (or ~/) with the given home directory.
 func expandHome(p, home string) string {
 	if home == "" {

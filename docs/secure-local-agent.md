@@ -479,3 +479,32 @@ If you enable `network.enforce`, make sure your image includes `iptables` (and
   `iptables` is missing, and resolves domains to IPs at setup time. Without it,
   outbound network access is open.
 - The `git push` wrapper can be bypassed by absolute-path git invocations.
+
+## Verifying the protections
+
+After `devc up`, confirm the controls from inside the container:
+
+```bash
+# Host credentials are withheld (none/agentOnly)
+devc exec -- env | grep -E 'GH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|SSH_AUTH_SOCK|AWS_|KUBECONFIG' || echo "no host creds"
+devc exec -- ls -la ~/.ssh 2>&1 || echo "no ssh mount"
+
+# Skills mount is present and read-only
+devc exec -- ls -la /skills
+devc exec -- touch /skills/x 2>&1 || echo "read-only as expected"
+
+# git commit works, git push is blocked (commitOnly)
+devc exec -- git commit --allow-empty -m test
+devc exec -- git push 2>&1 || echo "push blocked as expected"
+
+# Services reachable from the agent (DNS) and the host (localhost)
+devc exec -- psql "$DATABASE_URL" -c 'select 1'
+psql -h 127.0.0.1 -p 54321 -U app -d app -c 'select 1'
+```
+
+Workspace secrets policy (`mode=fail`):
+
+```bash
+touch .env && devc up          # refuses to start, lists .env
+rm .env && touch .env.example && devc up   # starts (allow-listed)
+```

@@ -89,6 +89,26 @@ func TestServiceEnv(t *testing.T) {
 	}
 }
 
+func TestServiceEnv_AgentEnvOverride(t *testing.T) {
+	custom := &types.DevcCustomization{
+		Services: map[string]*types.ServiceConfig{
+			"postgres": {
+				Enabled:  true,
+				Image:    "postgres:16",
+				AgentEnv: map[string]string{"PG_DSN": "postgres://app@postgres:5432/app?sslmode=disable"},
+			},
+		},
+	}
+	env := serviceEnv(custom)
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "PG_DSN=postgres://app@postgres:5432/app?sslmode=disable") {
+		t.Errorf("expected agentEnv override, got %v", env)
+	}
+	if strings.Contains(joined, "DATABASE_URL=") {
+		t.Errorf("agentEnv override should replace the default DATABASE_URL, got %v", env)
+	}
+}
+
 func TestServiceNetworkName(t *testing.T) {
 	if got := serviceNetworkName("devc-app-abcd1234"); got != "devc-net-devc-app-abcd1234" {
 		t.Errorf("unexpected network name %q", got)

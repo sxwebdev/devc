@@ -106,8 +106,12 @@ type ServiceConfig struct {
 	ContainerPort int               `json:"containerPort,omitempty"`
 	HostPort      int               `json:"hostPort,omitempty"`
 	HostIP        string            `json:"hostIP,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
+	Env           map[string]string `json:"env,omitempty"` // env vars set on the service container
 	Volumes       []ServiceVolume   `json:"volumes,omitempty"`
+	// AgentEnv overrides the connection-string env vars injected into the agent
+	// container for this service. When empty, well-known services (postgres,
+	// redis) derive a default (DATABASE_URL / REDIS_URL).
+	AgentEnv map[string]string `json:"agentEnv,omitempty"`
 }
 
 // ServiceVolume is a named volume attached to a service container.

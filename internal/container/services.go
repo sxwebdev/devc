@@ -93,11 +93,27 @@ func buildServiceSpecs(custom *types.DevcCustomization, containerName, networkNa
 }
 
 // serviceEnv derives connection-string env vars injected into the agent
-// container for well-known services. Hosts use the service DNS alias.
+// container. An explicit agentEnv on a service overrides the default derivation;
+// otherwise well-known services (postgres, redis) get a sensible default. Hosts
+// use the service DNS alias.
 func serviceEnv(custom *types.DevcCustomization) []string {
 	var env []string
 	for _, name := range enabledServiceNames(custom) {
 		svc := custom.Services[name]
+
+		// Explicit override: inject the user-provided env verbatim.
+		if len(svc.AgentEnv) > 0 {
+			keys := make([]string, 0, len(svc.AgentEnv))
+			for k := range svc.AgentEnv {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				env = append(env, k+"="+svc.AgentEnv[k])
+			}
+			continue
+		}
+
 		port := containerPortFor(name, svc)
 		switch name {
 		case "postgres":

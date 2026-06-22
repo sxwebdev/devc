@@ -238,7 +238,7 @@ The canonical source is `~/.agent/skills`. If your host symlinks
 `~/.claude/skills -> ~/.agent/skills`, the container still mounts the canonical
 path.
 
-## Services (Postgres / Redis) and DBeaver
+## Services (Postgres / Redis)
 
 Sibling service containers run alongside the agent, reachable from the agent by
 DNS name and from the host on `127.0.0.1` ports. The agent never receives the
@@ -281,14 +281,35 @@ Behavior:
 - Ports publish to `127.0.0.1` only by default (set `hostIP`/`hostPort`).
 - For well-known services, connection-string env vars are injected into the
   agent: `DATABASE_URL=postgresql://app:app@postgres:5432/app` and
-  `REDIS_URL=redis://redis:6379`.
+  `REDIS_URL=redis://redis:6379`. Override the injected variables per service
+  with `agentEnv` (see below).
 - Services and the network are removed on `devc down` / `devc clean`. Named
   volumes are **preserved** (delete them manually with `docker volume rm` if you
   want a clean slate).
 
+### Customizing the injected connection env
+
+To change the variable name or value the agent receives, set `agentEnv` on the
+service. It replaces the default derivation:
+
+```json
+{
+  "services": {
+    "postgres": {
+      "enabled": true,
+      "image": "postgres:16",
+      "agentEnv": {
+        "PG_DSN": "postgres://app:app@postgres:5432/app?sslmode=disable"
+      }
+    }
+  }
+}
+```
+
 ### Connect from the host
 
-DBeaver / `psql`:
+Use any database client on the host (`psql`, DBeaver, TablePlus, …). With the
+example above:
 
 ```text
 Host: 127.0.0.1

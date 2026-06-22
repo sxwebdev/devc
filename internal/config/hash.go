@@ -33,10 +33,11 @@ type configSnapshot struct {
 }
 
 type serviceSnapshot struct {
-	Name          string `json:"name"`
-	Image         string `json:"image,omitempty"`
-	ContainerPort int    `json:"containerPort,omitempty"`
-	HostPort      int    `json:"hostPort,omitempty"`
+	Name          string            `json:"name"`
+	Image         string            `json:"image,omitempty"`
+	ContainerPort int               `json:"containerPort,omitempty"`
+	HostPort      int               `json:"hostPort,omitempty"`
+	AgentEnv      map[string]string `json:"agentEnv,omitempty"`
 }
 
 type skillsSnapshot struct {
@@ -84,6 +85,7 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 				Image:         svc.Image,
 				ContainerPort: svc.ContainerPort,
 				HostPort:      svc.HostPort,
+				AgentEnv:      svc.AgentEnv,
 			})
 		}
 	}

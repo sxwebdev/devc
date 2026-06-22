@@ -25,6 +25,16 @@ type configSnapshot struct {
 	ResourcesMemory   string            `json:"memory,omitempty"`
 	NetworkMode       string            `json:"networkMode,omitempty"`
 	AgentMounts       []mountSnapshot   `json:"agentMounts,omitempty"`
+	CredentialPolicy  string            `json:"credentialPolicy,omitempty"`
+	GitPolicy         string            `json:"gitPolicy,omitempty"`
+	Skills            *skillsSnapshot   `json:"skills,omitempty"`
+}
+
+type skillsSnapshot struct {
+	Enabled  bool   `json:"enabled"`
+	Source   string `json:"source,omitempty"`
+	Target   string `json:"target,omitempty"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type mountSnapshot struct {
@@ -44,6 +54,21 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 		PostCreateCommand: devCfg.PostCreateCommand,
 		OnCreateCommand:   devCfg.OnCreateCommand,
 		ContainerEnv:      devCfg.ContainerEnv,
+		CredentialPolicy:  custom.CredentialPolicy,
+		GitPolicy:         custom.GitPolicy,
+	}
+
+	if custom.Skills != nil && custom.Skills.Enabled {
+		ro := true
+		if custom.Skills.ReadOnly != nil {
+			ro = *custom.Skills.ReadOnly
+		}
+		snap.Skills = &skillsSnapshot{
+			Enabled:  true,
+			Source:   custom.Skills.Source,
+			Target:   custom.Skills.Target,
+			ReadOnly: ro,
+		}
 	}
 
 	if custom.EnvPassthrough != nil {

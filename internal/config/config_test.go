@@ -130,6 +130,42 @@ func TestMergeCustomization(t *testing.T) {
 	}
 }
 
+func TestMergeCustomization_PresetExpansion(t *testing.T) {
+	global := &types.GlobalConfig{Defaults: types.DevcCustomization{SecurityProfile: "moderate"}}
+	project := &types.DevcCustomization{Preset: "secure-local-agent"}
+
+	merged := MergeCustomization(global, project)
+	if merged.Preset != "secure-local-agent" {
+		t.Errorf("expected preset recorded, got %q", merged.Preset)
+	}
+	if merged.CredentialPolicy != types.CredentialPolicyAgentOnly {
+		t.Errorf("expected preset credentialPolicy agentOnly, got %q", merged.CredentialPolicy)
+	}
+	if merged.GitPolicy != types.GitPolicyCommitOnly {
+		t.Errorf("expected preset gitPolicy commitOnly, got %q", merged.GitPolicy)
+	}
+	if merged.WorkspaceSecretsPolicy == nil || merged.WorkspaceSecretsPolicy.Mode != types.SecretsModeFail {
+		t.Error("expected preset workspaceSecretsPolicy fail")
+	}
+}
+
+func TestMergeCustomization_ProjectOverridesPreset(t *testing.T) {
+	global := &types.GlobalConfig{Defaults: types.DevcCustomization{}}
+	project := &types.DevcCustomization{
+		Preset:           "secure-local-agent",
+		CredentialPolicy: types.CredentialPolicyNone, // explicit override of preset's agentOnly
+	}
+
+	merged := MergeCustomization(global, project)
+	if merged.CredentialPolicy != types.CredentialPolicyNone {
+		t.Errorf("expected project to override preset credentialPolicy, got %q", merged.CredentialPolicy)
+	}
+	// Unset-by-project fields still come from the preset.
+	if merged.GitPolicy != types.GitPolicyCommitOnly {
+		t.Errorf("expected preset gitPolicy retained, got %q", merged.GitPolicy)
+	}
+}
+
 func TestFindImage(t *testing.T) {
 	img := FindImage("python")
 	if img == nil {

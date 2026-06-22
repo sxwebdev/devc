@@ -87,7 +87,7 @@ devc stop
 
 ### Global flags
 
-```
+```text
 --log-level         Log level: debug, info, warn, error (default: info)
 --output-format     Output format: text, json (default: text)
 ```
@@ -139,6 +139,20 @@ User-level defaults that apply to all projects unless overridden at the project 
 | Capabilities | Drop ALL    | Drop ALL + minimal | Docker defaults |
 | Resources    | 2 CPU, 4 GB | 4 CPU, 8 GB        | Unlimited       |
 | User         | Non-root    | Non-root           | Non-root        |
+
+### Secure local agent workflow
+
+An opt-in workflow that lets an agent edit code and commit without host
+credentials, blocks in-repo secrets from reaching the agent, and disables
+`git push`:
+
+```bash
+devc init --preset secure-local-agent --agent claude
+```
+
+See [docs/secure-local-agent.md](docs/secure-local-agent.md) for the threat
+model, `credentialPolicy` / `workspaceSecretsPolicy` / `gitPolicy` settings, and
+the read-only skills mount.
 
 ## Supported container runtimes
 

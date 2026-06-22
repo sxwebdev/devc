@@ -10,14 +10,17 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
+	"github.com/sxwebdev/devc/internal/preset"
 )
 
 func newInitCmd() *cobra.Command {
 	var (
-		agentFlag  string
-		imageFlag  string
-		listImages bool
-		listAgents bool
+		agentFlag   string
+		imageFlag   string
+		presetFlag  string
+		listImages  bool
+		listAgents  bool
+		listPresets bool
 	)
 
 	cmd := &cobra.Command{
@@ -56,6 +59,18 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 				return nil
 			}
 
+			if listPresets {
+				fmt.Print("Available presets:\n\n")
+				for _, name := range preset.Names() {
+					fmt.Printf("  %s\n", name)
+				}
+				return nil
+			}
+
+			if presetFlag != "" && !preset.Exists(presetFlag) {
+				return fmt.Errorf("unknown preset %q; use --list-presets to see options", presetFlag)
+			}
+
 			ws := getWorkspaceFolder(args)
 			dir := filepath.Join(ws, ".devcontainer")
 			target := filepath.Join(dir, "devcontainer.json")
@@ -74,20 +89,25 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 				}
 			}
 
-			devcConfig := map[string]any{
-				"securityProfile": "moderate",
-				"network": map[string]any{
-					"mode":      "restricted",
-					"allowlist": []string{},
-				},
-				"resources": map[string]any{
-					"cpus":      "4",
-					"memory":    "8g",
-					"pidsLimit": 256,
-				},
-				"session": map[string]any{
-					"stopOnLastDetach": true,
-				},
+			var devcConfig map[string]any
+			if presetFlag != "" {
+				devcConfig = secureDevcConfig(presetFlag)
+			} else {
+				devcConfig = map[string]any{
+					"securityProfile": "moderate",
+					"network": map[string]any{
+						"mode":      "restricted",
+						"allowlist": []string{},
+					},
+					"resources": map[string]any{
+						"cpus":      "4",
+						"memory":    "8g",
+						"pidsLimit": 256,
+					},
+					"session": map[string]any{
+						"stopOnLastDetach": true,
+					},
+				}
 			}
 
 			cfg := map[string]any{
@@ -180,8 +200,47 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 
 	cmd.Flags().StringVar(&agentFlag, "agent", "", "pre-configure AI agents, comma-separated (use --list-agents to see options)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "base image name or full reference (use --list-images to see options)")
+	cmd.Flags().StringVar(&presetFlag, "preset", "", "apply a security preset (use --list-presets to see options)")
 	cmd.Flags().BoolVar(&listImages, "list-images", false, "list available base images")
 	cmd.Flags().BoolVar(&listAgents, "list-agents", false, "list available AI agent profiles")
+	cmd.Flags().BoolVar(&listPresets, "list-presets", false, "list available security presets")
 
 	return cmd
+}
+
+// secureDevcConfig produces a self-documenting devc customization block for a
+// security preset. The "preset" field drives behavior at runtime; the explicit
+// fields make the resulting protections visible and easy to tweak.
+func secureDevcConfig(presetName string) map[string]any {
+	return map[string]any{
+		"preset":           presetName,
+		"securityProfile":  "moderate",
+		"credentialPolicy": "agentOnly",
+		"gitPolicy":        "commitOnly",
+		"network": map[string]any{
+			"mode":      "restricted",
+			"allowlist": []string{},
+		},
+		"resources": map[string]any{
+			"cpus":      "4",
+			"memory":    "8g",
+			"pidsLimit": 256,
+		},
+		"session": map[string]any{
+			"stopOnLastDetach": true,
+		},
+		"workspaceSecretsPolicy": map[string]any{
+			"enabled":       true,
+			"mode":          "fail",
+			"patterns":      []string{".env", ".env.*", "*.env", "config.yaml", "config.yml", "secrets.yaml", "secrets.yml", "credentials.json", "service-account*.json", ".npmrc", ".pypirc", ".netrc"},
+			"allowPatterns": []string{".env.example", ".env.sample", "*.example.yaml", "*.sample.yaml"},
+		},
+		"skills": map[string]any{
+			"enabled":  true,
+			"source":   "~/.agent/skills",
+			"target":   "/skills",
+			"readonly": true,
+			"required": false,
+		},
+	}
 }

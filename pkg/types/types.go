@@ -47,6 +47,73 @@ type DevcCustomization struct {
 	Session         *SessionConfig    `json:"session,omitempty"`
 	AgentMounts     map[string]string `json:"agentMounts,omitempty"`
 	EnvPassthrough  []string          `json:"envPassthrough,omitempty"` // Host env vars to forward (e.g., API keys)
+
+	// Secure local agent workflow (additive; empty values preserve legacy behavior).
+	Preset                 string                    `json:"preset,omitempty"`           // Named bundle of secure defaults (e.g. secure-local-agent)
+	CredentialPolicy       string                    `json:"credentialPolicy,omitempty"` // none, agentOnly, developer, legacy (default: legacy)
+	WorkspaceSecretsPolicy *WorkspaceSecretsPolicy   `json:"workspaceSecretsPolicy,omitempty"`
+	GitPolicy              string                    `json:"gitPolicy,omitempty"` // none, commitOnly, full
+	Skills                 *SkillsConfig             `json:"skills,omitempty"`
+	Services               map[string]*ServiceConfig `json:"services,omitempty"` // sibling service containers (executed in a later milestone)
+}
+
+// Credential policy values. Empty string is treated as CredentialPolicyLegacy.
+const (
+	CredentialPolicyNone      = "none"      // No host credentials mounted, forwarded, read, or injected.
+	CredentialPolicyAgentOnly = "agentOnly" // Only the credentials required to run the AI agent itself.
+	CredentialPolicyDeveloper = "developer" // Agent creds plus opt-in developer conveniences (git config, ssh-agent).
+	CredentialPolicyLegacy    = "legacy"    // Preserve existing behavior (all host creds/mounts as before).
+)
+
+// Git policy values. Empty string is treated as GitPolicyFull (no restriction).
+const (
+	GitPolicyNone       = "none"       // Do not modify git behavior.
+	GitPolicyCommitOnly = "commitOnly" // Block `git push`; allow all other git operations.
+	GitPolicyFull       = "full"       // Do not restrict git.
+)
+
+// Workspace secrets policy modes.
+const (
+	SecretsModeOff      = "off"      // Do nothing (existing behavior).
+	SecretsModeFail     = "fail"     // Refuse to start if protected files are present in the workspace.
+	SecretsModeMask     = "mask"     // Technically hide protected files from the agent (implemented in a later milestone).
+	SecretsModeReadonly = "readonly" // Mount protected files read-only (less safe; not used by the secure preset).
+)
+
+// WorkspaceSecretsPolicy controls how local secret files inside the workspace
+// are handled before the agent gains access to it.
+type WorkspaceSecretsPolicy struct {
+	Enabled       bool     `json:"enabled,omitempty"`
+	Mode          string   `json:"mode,omitempty"` // off, fail, mask, readonly
+	Patterns      []string `json:"patterns,omitempty"`
+	AllowPatterns []string `json:"allowPatterns,omitempty"`
+}
+
+// SkillsConfig configures a read-only skills mount inside the container.
+type SkillsConfig struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	Source   string `json:"source,omitempty"`   // Host path; ~ is expanded. Default: ~/.agent/skills
+	Target   string `json:"target,omitempty"`   // Container path. Default: /skills
+	ReadOnly *bool  `json:"readonly,omitempty"` // Default: true
+	Required bool   `json:"required,omitempty"` // If true, a missing source path is a hard error.
+}
+
+// ServiceConfig describes a sibling service container (e.g. Postgres, Redis).
+// Parsed now; executed in a later milestone.
+type ServiceConfig struct {
+	Enabled       bool              `json:"enabled,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	ContainerPort int               `json:"containerPort,omitempty"`
+	HostPort      int               `json:"hostPort,omitempty"`
+	HostIP        string            `json:"hostIP,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Volumes       []ServiceVolume   `json:"volumes,omitempty"`
+}
+
+// ServiceVolume is a named volume attached to a service container.
+type ServiceVolume struct {
+	Name   string `json:"name,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // ResolvedAgents returns the deduplicated list of agent names from both Agent and Agents fields.

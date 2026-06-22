@@ -18,6 +18,7 @@ import (
 
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
+	"github.com/sxwebdev/devc/internal/credpolicy"
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/pkg/types"
 )
@@ -159,18 +160,33 @@ func (c *Client) CreateAndStart(
 		env = append(env, k+"="+v)
 	}
 
-	// Forward host env vars for auth (API keys, tokens)
-	// Collect from all agent profiles and devc customization, deduplicating
-	passthroughSet := make(map[string]bool)
+	// Determine which host credentials this policy permits. Empty policy maps
+	// to legacy (current behavior) for backwards compatibility.
+	cred := credpolicy.Decide(custom.CredentialPolicy)
+
+	// Static (non-secret) agent env vars are always applied.
 	for _, p := range agentProfiles {
-		for _, envName := range p.EnvPassthrough {
-			passthroughSet[envName] = true
-		}
 		for k, v := range p.EnvVars {
 			env = append(env, k+"="+v)
 		}
 	}
-	if custom.EnvPassthrough != nil {
+
+	// Forward host env vars for auth (API keys, tokens), deduplicated.
+	// Agent-profile passthroughs are gated by AllowAgentCreds; project-level
+	// passthroughs by AllowCustomEnvPass. Under agentOnly, git/forge/cloud
+	// credential names are stripped even from agent passthroughs.
+	passthroughSet := make(map[string]bool)
+	if cred.AllowAgentCreds {
+		for _, p := range agentProfiles {
+			for _, envName := range p.EnvPassthrough {
+				if cred.FilterGitCloud && credpolicy.IsGitCloudCredEnv(envName) {
+					continue
+				}
+				passthroughSet[envName] = true
+			}
+		}
+	}
+	if cred.AllowCustomEnvPass && custom.EnvPassthrough != nil {
 		for _, envName := range custom.EnvPassthrough {
 			passthroughSet[envName] = true
 		}
@@ -183,13 +199,18 @@ func (c *Client) CreateAndStart(
 
 	// Resolve agent credentials from host (Keychain, credential files, etc.)
 	credSet := make(map[string]bool) // deduplicate credential env vars
-	for _, p := range agentProfiles {
-		creds := agent.ResolveCredentials(p)
-		for _, e := range creds.Env {
-			key := strings.SplitN(e, "=", 2)[0]
-			if !credSet[key] {
-				credSet[key] = true
-				env = append(env, e)
+	if cred.AllowAgentCreds {
+		for _, p := range agentProfiles {
+			creds := agent.ResolveCredentials(p)
+			for _, e := range creds.Env {
+				key := strings.SplitN(e, "=", 2)[0]
+				if cred.FilterGitCloud && credpolicy.IsGitCloudCredEnv(key) {
+					continue
+				}
+				if !credSet[key] {
+					credSet[key] = true
+					env = append(env, e)
+				}
 			}
 		}
 	}
@@ -242,8 +263,10 @@ func (c *Client) CreateAndStart(
 
 	// Only bind-mount agent config entries that are NOT marked Copy.
 	// Copy entries are handled after container start via docker cp.
+	// Under credential policies that withhold host agent config, skip these
+	// host-linked bind mounts entirely.
 	mountedTargets := make(map[string]bool) // deduplicate across profiles
-	if home != "" {
+	if home != "" && cred.AllowHostAgentConfig {
 		for _, p := range agentProfiles {
 			for _, m := range p.ConfigMounts {
 				if m.Copy {
@@ -271,8 +294,9 @@ func (c *Client) CreateAndStart(
 		}
 	}
 
-	// Common auth mounts (SSH keys, git config) — always read-only
-	if home != "" {
+	// Common auth mounts (SSH keys, git config) — always read-only.
+	// Gated by the credential policy (withheld under none/agentOnly).
+	if home != "" && cred.AllowCommonAuth {
 		for _, m := range agent.CommonAuthMounts() {
 			src := home + "/" + m.HostPath
 			if _, statErr := os.Stat(src); statErr != nil {
@@ -288,10 +312,27 @@ func (c *Client) CreateAndStart(
 		}
 	}
 
+	// Read-only skills mount.
+	if skillsMount, skillsEnv, skillsErr := resolveSkillsMount(custom.Skills, home); skillsErr != nil {
+		return skillsErr
+	} else if skillsMount != nil {
+		mounts = append(mounts, *skillsMount)
+		env = append(env, skillsEnv)
+	}
+
+	// Read-only mounts for in-workspace secret files when the policy mode is
+	// "readonly": the workspace stays writable but each protected file is
+	// shadowed by a read-only bind mount.
+	if roMounts, roErr := readonlySecretMounts(custom, workspaceFolder, wsTarget); roErr != nil {
+		return roErr
+	} else {
+		mounts = append(mounts, roMounts...)
+	}
+
 	// SSH agent socket forwarding.
 	// On macOS, Docker Desktop provides the socket automatically; we only set the env var.
 	// On Linux, we bind-mount the host socket into the container.
-	if hostSock, containerSock := agent.SSHAuthSockMount(); containerSock != "" {
+	if hostSock, containerSock := agent.SSHAuthSockMount(); cred.AllowSSHAgent && containerSock != "" {
 		if hostSock != "" {
 			if _, statErr := os.Stat(hostSock); statErr == nil {
 				mounts = append(mounts, mount.Mount{

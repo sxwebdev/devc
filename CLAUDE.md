@@ -29,7 +29,7 @@ Copilot, Gemini, Aider, Opencode) using the devcontainer.json spec, extended wit
 
 ### Configuration Cascade
 
-```
+```text
 ~/.devc/config.json (global defaults)
   → .devcontainer/devcontainer.json (project overrides global)
     → CLI flags (override merged config)

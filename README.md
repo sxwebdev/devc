@@ -22,6 +22,7 @@ while providing a consistent development experience for both local and remote wo
 
 ```sh
 brew tap sxwebdev/devc https://github.com/sxwebdev/devc
+brew trust sxwebdev/devc
 brew install devc
 ```
 

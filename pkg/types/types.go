@@ -1,0 +1,123 @@
+package types
+
+// DevContainerConfig represents a parsed devcontainer.json.
+type DevContainerConfig struct {
+	Name                 string            `json:"name,omitempty"`
+	Image                string            `json:"image,omitempty"`
+	Build                *BuildConfig      `json:"build,omitempty"`
+	DockerComposeFile    any               `json:"dockerComposeFile,omitempty"`
+	Service              string            `json:"service,omitempty"`
+	RunArgs              []string          `json:"runArgs,omitempty"`
+	ContainerEnv         map[string]string `json:"containerEnv,omitempty"`
+	RemoteEnv            map[string]string `json:"remoteEnv,omitempty"`
+	RemoteUser           string            `json:"remoteUser,omitempty"`
+	Mounts               []any             `json:"mounts,omitempty"`
+	Features             map[string]any    `json:"features,omitempty"`
+	ForwardPorts         []any             `json:"forwardPorts,omitempty"`
+	PostCreateCommand    any               `json:"postCreateCommand,omitempty"`
+	PostStartCommand     any               `json:"postStartCommand,omitempty"`
+	PostAttachCommand    any               `json:"postAttachCommand,omitempty"`
+	InitializeCommand    any               `json:"initializeCommand,omitempty"`
+	OnCreateCommand      any               `json:"onCreateCommand,omitempty"`
+	UpdateContentCommand any               `json:"updateContentCommand,omitempty"`
+	Customizations       map[string]any    `json:"customizations,omitempty"`
+	OverrideCommand      *bool             `json:"overrideCommand,omitempty"`
+	ShutdownAction       string            `json:"shutdownAction,omitempty"`
+	WorkspaceFolder      string            `json:"workspaceFolder,omitempty"`
+	WorkspaceMount       string            `json:"workspaceMount,omitempty"`
+}
+
+// BuildConfig holds Dockerfile build settings.
+type BuildConfig struct {
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	Context    string            `json:"context,omitempty"`
+	Args       map[string]string `json:"args,omitempty"`
+	Target     string            `json:"target,omitempty"`
+	CacheFrom  any               `json:"cacheFrom,omitempty"`
+}
+
+// DevcCustomization holds AI safety extensions under customizations.devc.
+type DevcCustomization struct {
+	Agent           string            `json:"agent,omitempty"`  // Single agent (backward compat)
+	Agents          []string          `json:"agents,omitempty"` // Multiple agents
+	SecurityProfile string            `json:"securityProfile,omitempty"`
+	Network         *NetworkConfig    `json:"network,omitempty"`
+	Resources       *ResourceConfig   `json:"resources,omitempty"`
+	Filesystem      *FilesystemConfig `json:"filesystem,omitempty"`
+	Session         *SessionConfig    `json:"session,omitempty"`
+	AgentMounts     map[string]string `json:"agentMounts,omitempty"`
+	EnvPassthrough  []string          `json:"envPassthrough,omitempty"` // Host env vars to forward (e.g., API keys)
+}
+
+// ResolvedAgents returns the deduplicated list of agent names from both Agent and Agents fields.
+func (d *DevcCustomization) ResolvedAgents() []string {
+	seen := make(map[string]bool)
+	var result []string
+	// Agents field first, then Agent for backward compat
+	for _, a := range d.Agents {
+		if a != "" && !seen[a] {
+			seen[a] = true
+			result = append(result, a)
+		}
+	}
+	if d.Agent != "" && !seen[d.Agent] {
+		result = append(result, d.Agent)
+	}
+	return result
+}
+
+type NetworkConfig struct {
+	Mode      string   `json:"mode,omitempty"` // none, restricted, host
+	Allowlist []string `json:"allowlist,omitempty"`
+	Denylist  []string `json:"denylist,omitempty"`
+}
+
+type ResourceConfig struct {
+	CPUs      string `json:"cpus,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	PidsLimit int64  `json:"pidsLimit,omitempty"`
+}
+
+type FilesystemConfig struct {
+	ReadOnlyPaths    []string `json:"readOnlyPaths,omitempty"`
+	NoExecPaths      []string `json:"noExecPaths,omitempty"`
+	ProjectMountMode string   `json:"projectMountMode,omitempty"` // rw, ro, overlay
+}
+
+type SessionConfig struct {
+	StopOnLastDetach   bool `json:"stopOnLastDetach,omitempty"`
+	IdleTimeoutMinutes int  `json:"idleTimeoutMinutes,omitempty"`
+}
+
+// GlobalConfig represents ~/.devc/config.json.
+type GlobalConfig struct {
+	Defaults DevcCustomization      `json:"defaults"`
+	Agents   map[string]AgentConfig `json:"agents,omitempty"`
+}
+
+type AgentConfig struct {
+	ConfigPaths []string `json:"configPaths,omitempty"`
+	MountMode   string   `json:"mountMode,omitempty"`
+}
+
+// ContainerInfo holds runtime info about a managed container.
+type ContainerInfo struct {
+	Name            string `json:"name"`
+	ContainerID     string `json:"containerId"`
+	WorkspaceFolder string `json:"workspaceFolder"`
+	State           string `json:"state"`
+	Image           string `json:"image"`
+	Agent           string `json:"agent,omitempty"`
+	Sessions        int    `json:"sessions"`
+}
+
+// SecurityProfile defines container security constraints.
+type SecurityProfile struct {
+	Name           string
+	Network        NetworkConfig
+	Resources      ResourceConfig
+	DropAllCaps    bool
+	AddCaps        []string
+	SeccompProfile string
+	RunAsUser      string
+}

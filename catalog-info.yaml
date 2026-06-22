@@ -1,0 +1,16 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: devc
+  title: devc
+  description: Development container for AI projects.
+  annotations:
+    github.com/project-slug: sxwebdev/devc
+spec:
+  type: container
+  lifecycle: experimental
+  owner: user:sxwebdev
+  system: ai
+  tags:
+    - devcontainer
+    - ai

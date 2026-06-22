@@ -2,18 +2,12 @@ package container
 
 import (
 	"fmt"
-	"net/url"
+	"os"
 	"sort"
 
 	"github.com/sxwebdev/devc/internal/docker"
 	"github.com/sxwebdev/devc/pkg/types"
 )
-
-// Default ports used when a service config omits containerPort.
-var defaultServicePorts = map[string]int{
-	"postgres": 5432,
-	"redis":    6379,
-}
 
 // servicesEnabled reports whether any service is enabled.
 func servicesEnabled(custom *types.DevcCustomization) bool {
@@ -94,8 +88,8 @@ func buildServiceSpecs(custom *types.DevcCustomization, containerName, networkNa
 
 // serviceEnv derives connection-string env vars injected into the agent
 // container. An explicit agentEnv on a service overrides the default derivation;
-// otherwise well-known services (postgres, redis) get a sensible default. Hosts
-// use the service DNS alias.
+// otherwise a well-known service key (see connStringBuilders) gets a sensible
+// default. Hosts use the service DNS alias.
 func serviceEnv(custom *types.DevcCustomization) []string {
 	var env []string
 	for _, name := range enabledServiceNames(custom) {
@@ -114,16 +108,10 @@ func serviceEnv(custom *types.DevcCustomization) []string {
 			continue
 		}
 
-		port := containerPortFor(name, svc)
-		switch name {
-		case "postgres":
-			user := valueOr(svc.Env["POSTGRES_USER"], "app")
-			pass := valueOr(svc.Env["POSTGRES_PASSWORD"], "app")
-			db := valueOr(svc.Env["POSTGRES_DB"], "app")
-			env = append(env, fmt.Sprintf("DATABASE_URL=postgresql://%s:%s@%s:%d/%s",
-				url.QueryEscape(user), url.QueryEscape(pass), name, port, db))
-		case "redis":
-			env = append(env, fmt.Sprintf("REDIS_URL=redis://%s:%d", name, port))
+		if build, ok := connStringBuilders[name]; ok {
+			if e := build(svc, name, containerPortFor(name, svc)); e != "" {
+				env = append(env, e)
+			}
 		}
 	}
 	return env
@@ -145,6 +133,13 @@ func (m *Manager) setupServices(containerName, networkName string, custom *types
 	for _, spec := range buildServiceSpecs(custom, containerName, networkName) {
 		if spec.Image == "" {
 			return fmt.Errorf("service %q has no image", spec.Alias)
+		}
+		// A host port can only be published when the container port is known.
+		// For non-well-known services, set containerPort explicitly.
+		if spec.HostPort > 0 && spec.ContainerPort == 0 {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warning: service %q sets hostPort but no containerPort (and no default is known); host port not published — set \"containerPort\"\n",
+				spec.Alias)
 		}
 		fmt.Printf("Starting service %s (%s)...\n", spec.Alias, spec.Image)
 		if err := m.Docker.CreateService(spec); err != nil {

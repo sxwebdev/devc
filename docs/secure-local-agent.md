@@ -238,11 +238,18 @@ The canonical source is `~/.agent/skills`. If your host symlinks
 `~/.claude/skills -> ~/.agent/skills`, the container still mounts the canonical
 path.
 
-## Services (Postgres / Redis)
+## Services (databases, brokers, …)
 
-Sibling service containers run alongside the agent, reachable from the agent by
-DNS name and from the host on `127.0.0.1` ports. The agent never receives the
-host Docker socket — `devc` manages the service containers from the host.
+Any container image can run as a sibling service alongside the agent, reachable
+from the agent by DNS name and from the host on `127.0.0.1` ports. The agent
+never receives the host Docker socket — `devc` manages the service containers
+from the host.
+
+Postgres and Redis are not special — they are just the keys with built-in
+defaults. RabbitMQ, Kafka, NATS, MongoDB, MySQL, and others work the same way;
+many also have built-in defaults (see the table below). For anything else, set
+`image` + `containerPort` + `hostPort` and provide the connection string via
+`agentEnv`.
 
 ```json
 {
@@ -286,6 +293,58 @@ Behavior:
 - Services and the network are removed on `devc down` / `devc clean`. Named
   volumes are **preserved** (delete them manually with `docker volume rm` if you
   want a clean slate).
+
+### Built-in defaults
+
+For these service keys, `containerPort` may be omitted and a connection-string
+env var is injected automatically (override either with `containerPort` /
+`agentEnv`):
+
+| Service key                  | Default port | Injected env var |
+| ---------------------------- | ------------ | ---------------- |
+| `postgres` / `postgresql`    | 5432         | `DATABASE_URL`   |
+| `mysql` / `mariadb`          | 3306         | `DATABASE_URL`   |
+| `redis` / `valkey`           | 6379         | `REDIS_URL`      |
+| `mongo` / `mongodb`          | 27017        | `MONGO_URL`      |
+| `rabbitmq`                   | 5672         | `AMQP_URL`       |
+| `nats`                       | 4222         | `NATS_URL`       |
+| `kafka`                      | 9092         | `KAFKA_BROKERS`  |
+| `clickhouse`                 | 9000         | —                |
+| `elasticsearch`/`opensearch` | 9200         | —                |
+| `memcached`                  | 11211        | —                |
+
+Anything else also works — give it a `containerPort` and an `agentEnv`:
+
+```json
+{
+  "services": {
+    "rabbitmq": {
+      "enabled": true,
+      "image": "rabbitmq:3-management",
+      "hostPort": 5672,
+      "env": { "RABBITMQ_DEFAULT_USER": "app", "RABBITMQ_DEFAULT_PASS": "app" }
+    },
+    "nats": { "enabled": true, "image": "nats:2", "hostPort": 4222 },
+    "kafka": {
+      "enabled": true,
+      "image": "bitnami/kafka:3.7",
+      "hostPort": 9092
+    },
+    "qdrant": {
+      "enabled": true,
+      "image": "qdrant/qdrant",
+      "containerPort": 6333,
+      "hostPort": 6333,
+      "agentEnv": { "QDRANT_URL": "http://qdrant:6333" }
+    }
+  }
+}
+```
+
+The agent reaches each service by its key as DNS name (`rabbitmq:5672`,
+`nats:4222`, `kafka:9092`, `qdrant:6333`). Two services that both default to
+`DATABASE_URL` (e.g. postgres + mysql) collide — use `agentEnv` to give one a
+distinct variable.
 
 ### Customizing the injected connection env
 
@@ -394,7 +453,9 @@ your own build:
 ```json
 {
   "image": "agent-dev-base:latest",
-  "customizations": { "devc": { "preset": "secure-local-agent", "agent": "claude" } }
+  "customizations": {
+    "devc": { "preset": "secure-local-agent", "agent": "claude" }
+  }
 }
 ```
 

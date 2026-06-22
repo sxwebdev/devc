@@ -109,6 +109,49 @@ func TestServiceEnv_AgentEnvOverride(t *testing.T) {
 	}
 }
 
+func TestServiceEnv_WellKnownServices(t *testing.T) {
+	custom := &types.DevcCustomization{
+		Services: map[string]*types.ServiceConfig{
+			"rabbitmq": {Enabled: true, Image: "rabbitmq:3", Env: map[string]string{"RABBITMQ_DEFAULT_USER": "u", "RABBITMQ_DEFAULT_PASS": "p"}},
+			"nats":     {Enabled: true, Image: "nats:2"},
+			"kafka":    {Enabled: true, Image: "bitnami/kafka"},
+			"mongo":    {Enabled: true, Image: "mongo:7", Env: map[string]string{"MONGO_INITDB_ROOT_USERNAME": "root", "MONGO_INITDB_ROOT_PASSWORD": "secret"}},
+			"mysql":    {Enabled: true, Image: "mysql:8", Env: map[string]string{"MYSQL_USER": "app", "MYSQL_PASSWORD": "app", "MYSQL_DATABASE": "app"}},
+		},
+	}
+	joined := strings.Join(serviceEnv(custom), "\n")
+
+	wants := []string{
+		"AMQP_URL=amqp://u:p@rabbitmq:5672/",
+		"NATS_URL=nats://nats:4222",
+		"KAFKA_BROKERS=kafka:9092",
+		"MONGO_URL=mongodb://root:secret@mongo:27017",
+		"DATABASE_URL=mysql://app:app@mysql:3306/app",
+	}
+	for _, w := range wants {
+		if !strings.Contains(joined, w) {
+			t.Errorf("expected %q in service env, got:\n%s", w, joined)
+		}
+	}
+}
+
+func TestContainerPortFor_Defaults(t *testing.T) {
+	cases := map[string]int{"postgres": 5432, "rabbitmq": 5672, "nats": 4222, "kafka": 9092, "mongo": 27017}
+	for name, want := range cases {
+		if got := containerPortFor(name, &types.ServiceConfig{}); got != want {
+			t.Errorf("default port for %s = %d, want %d", name, got, want)
+		}
+	}
+	// Explicit port wins over the default.
+	if got := containerPortFor("postgres", &types.ServiceConfig{ContainerPort: 6000}); got != 6000 {
+		t.Errorf("explicit port should win, got %d", got)
+	}
+	// Unknown service without a port has no default.
+	if got := containerPortFor("custombroker", &types.ServiceConfig{}); got != 0 {
+		t.Errorf("unknown service should have no default port, got %d", got)
+	}
+}
+
 func TestServiceNetworkName(t *testing.T) {
 	if got := serviceNetworkName("devc-app-abcd1234"); got != "devc-net-devc-app-abcd1234" {
 		t.Errorf("unexpected network name %q", got)

@@ -13,6 +13,8 @@ func newUpCmd() *cobra.Command {
 		securityFlag string
 		detachFlag   bool
 		rebuildFlag  bool
+		yesFlag      bool
+		noFlag       bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,6 +44,8 @@ func newUpCmd() *cobra.Command {
 				SecurityProfile: securityFlag,
 				Detach:          detachFlag,
 				Rebuild:         rebuildFlag,
+				AssumeYes:       yesFlag,
+				AssumeNo:        noFlag,
 			})
 		},
 	}
@@ -50,6 +54,9 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().StringVar(&securityFlag, "security-profile", "", "security preset (strict, moderate, permissive)")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "don't attach after starting")
 	cmd.Flags().BoolVar(&rebuildFlag, "rebuild", false, "force rebuild even if container exists")
+	cmd.Flags().BoolVarP(&yesFlag, "yes", "y", false, "answer the rebuild-on-config-change prompt with yes (non-interactive)")
+	cmd.Flags().BoolVar(&noFlag, "no", false, "answer the rebuild-on-config-change prompt with no (non-interactive)")
+	cmd.MarkFlagsMutuallyExclusive("yes", "no")
 
 	return cmd
 }

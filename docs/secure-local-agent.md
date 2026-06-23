@@ -480,10 +480,10 @@ your own build:
 ```
 
 A ready-to-build polyglot example (C/C++, Go, Node, Python + common CLI tools)
-lives in [`examples/images/polyglot-agent-dev`](../examples/images/polyglot-agent-dev):
+lives in [`examples/images/agent-dev-base`](../examples/images/agent-dev-base):
 
 ```bash
-docker build -t agent-dev-base:latest examples/images/polyglot-agent-dev
+docker build -t agent-dev-base:latest examples/images/agent-dev-base
 ```
 
 If you enable `network.enforce`, make sure your image includes `iptables` (and

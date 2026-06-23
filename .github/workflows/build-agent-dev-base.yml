@@ -1,0 +1,56 @@
+name: Build agent-dev-base image
+
+# Manual-only: builds the agent dev base image and (optionally) pushes
+# it to GitHub Container Registry. Trigger from the Actions tab → "Run workflow".
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (e.g. latest, v1)"
+        required: true
+        default: "latest"
+      push:
+        description: "Push to ghcr.io (uncheck to build-only)"
+        type: boolean
+        required: true
+        default: true
+      platforms:
+        description: "Target platforms"
+        required: true
+        default: "linux/amd64,linux/arm64"
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/agent-dev-base
+  CONTEXT: examples/images/agent-dev-base
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ env.IMAGE }}:${{ inputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

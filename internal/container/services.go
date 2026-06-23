@@ -54,7 +54,7 @@ func containerPortFor(name string, svc *types.ServiceConfig) int {
 	if svc.ContainerPort > 0 {
 		return svc.ContainerPort
 	}
-	return defaultServicePorts[name]
+	return defaultServicePort(name)
 }
 
 // buildServiceSpecs translates the enabled services into docker service specs.

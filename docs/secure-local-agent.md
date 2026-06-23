@@ -271,12 +271,26 @@ many also have built-in defaults (see the table below). For anything else, set
 `image` + `containerPort` + `hostPort` and provide the connection string via
 `agentEnv`.
 
+Services are **opt-in** — `devc init` adds none by default. Scaffold them from
+the catalog at init time or any time after:
+
+```bash
+devc service list                 # show the catalog (name, image, port)
+devc init --services postgres,redis
+devc service add postgres         # add to an existing devcontainer.json
+devc service remove postgres      # remove again
+```
+
+`devc service add` writes the full block shown below into `devcontainer.json`;
+edit it freely afterwards (versions, ports, env). The example below is what the
+`postgres` + `redis` catalog entries expand to:
+
 ```json
 {
   "services": {
     "postgres": {
       "enabled": true,
-      "image": "postgres:16",
+      "image": "postgres:18",
       "containerPort": 5432,
       "hostPort": 54321,
       "hostIP": "127.0.0.1",
@@ -291,7 +305,7 @@ many also have built-in defaults (see the table below). For anything else, set
     },
     "redis": {
       "enabled": true,
-      "image": "redis:7",
+      "image": "redis:8",
       "containerPort": 6379,
       "hostPort": 63791,
       "hostIP": "127.0.0.1"
@@ -376,7 +390,7 @@ service. It replaces the default derivation:
   "services": {
     "postgres": {
       "enabled": true,
-      "image": "postgres:16",
+      "image": "postgres:18",
       "agentEnv": {
         "PG_DSN": "postgres://app:app@postgres:5432/app?sslmode=disable"
       }

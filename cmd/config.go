@@ -273,20 +273,7 @@ Examples:
 			}
 
 			// Write customization back
-			if devCfg.Customizations == nil {
-				devCfg.Customizations = make(map[string]any)
-			}
-			customData, err := json.Marshal(custom)
-			if err != nil {
-				return fmt.Errorf("marshaling customization: %w", err)
-			}
-			var customMap map[string]any
-			if err := json.Unmarshal(customData, &customMap); err != nil {
-				return fmt.Errorf("converting customization: %w", err)
-			}
-			devCfg.Customizations["devc"] = customMap
-
-			if err := config.SaveDevcontainerConfig(cfgPath, devCfg); err != nil {
+			if err := config.ApplyDevcCustomization(cfgPath, devCfg, custom); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
 

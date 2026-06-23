@@ -194,6 +194,8 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 					}
 				}
 			}
+			fmt.Println()
+			fmt.Println("Next: run 'devc up' to start the container")
 			return nil
 		},
 	}

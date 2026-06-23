@@ -9,9 +9,10 @@ func newAttachCmd() *cobra.Command {
 	var shellFlag string
 
 	cmd := &cobra.Command{
-		Use:   "attach [path]",
-		Short: "Attach an interactive session to a running container",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "attach [path]",
+		Aliases: []string{"shell"},
+		Short:   "Open a shell in the container (starts it if stopped)",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr, err := container.NewManager()
 			if err != nil {

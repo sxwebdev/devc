@@ -2,7 +2,6 @@ package container
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 
@@ -50,18 +49,6 @@ func serviceNetworkName(containerName string) string {
 	return "devc-net-" + containerName
 }
 
-// enabledServiceNames returns the enabled service keys in deterministic order.
-func enabledServiceNames(custom *types.DevcCustomization) []string {
-	var names []string
-	for name, svc := range custom.Services {
-		if svc != nil && svc.Enabled {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
 // containerPortFor returns the configured container port or a known default.
 func containerPortFor(name string, svc *types.ServiceConfig) int {
 	if svc.ContainerPort > 0 {
@@ -73,7 +60,7 @@ func containerPortFor(name string, svc *types.ServiceConfig) int {
 // buildServiceSpecs translates the enabled services into docker service specs.
 func buildServiceSpecs(custom *types.DevcCustomization, containerName, networkName string) []docker.ServiceSpec {
 	var specs []docker.ServiceSpec
-	for _, name := range enabledServiceNames(custom) {
+	for _, name := range custom.EnabledServiceNames() {
 		svc := custom.Services[name]
 
 		env := make([]string, 0, len(svc.Env))
@@ -117,7 +104,7 @@ func buildServiceSpecs(custom *types.DevcCustomization, containerName, networkNa
 // default. Hosts use the service DNS alias.
 func serviceEnv(custom *types.DevcCustomization) []string {
 	var env []string
-	for _, name := range enabledServiceNames(custom) {
+	for _, name := range custom.EnabledServiceNames() {
 		svc := custom.Services[name]
 
 		// Explicit override: inject the user-provided env verbatim.
@@ -165,8 +152,8 @@ func (m *Manager) setupServices(containerName, networkName string, custom *types
 		// A host port can only be published when the container port is known.
 		// For non-well-known services, set containerPort explicitly.
 		if spec.HostPort > 0 && spec.ContainerPort == 0 {
-			_, _ = fmt.Fprintf(os.Stderr,
-				"warning: service %q sets hostPort but no containerPort (and no default is known); host port not published — set \"containerPort\"\n",
+			m.warn(
+				"service %q sets hostPort but no containerPort (and no default is known); host port not published — set \"containerPort\"",
 				spec.Alias)
 		}
 		fmt.Printf("Starting service %s (%s)...\n", spec.Alias, spec.Image)
@@ -187,7 +174,7 @@ func (m *Manager) ensureServicesForExisting(containerName string, custom *types.
 		return
 	}
 	if err := m.setupServices(containerName, serviceNetworkName(containerName), custom); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not ensure services: %v\n", err)
+		m.warn("could not ensure services: %v", err)
 	}
 }
 

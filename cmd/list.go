@@ -52,5 +52,6 @@ func newListCmd() *cobra.Command {
 		},
 	}
 
+	addOutputFormatFlag(cmd)
 	return cmd
 }

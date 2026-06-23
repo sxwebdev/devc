@@ -77,24 +77,33 @@ devc stop
 
 ## Commands
 
-| Command              | Description                                          |
-| -------------------- | ---------------------------------------------------- |
-| `devc up [path]`     | Create and start a development container             |
-| `devc exec -- <cmd>` | Execute a command in a running container             |
-| `devc attach [path]` | Attach an interactive session                        |
-| `devc stop [path]`   | Stop a container (respects active sessions)          |
-| `devc down [path]`   | Stop and remove a container                          |
-| `devc up --rebuild`  | Recreate the container (e.g. after config changes)   |
-| `devc list`          | List all managed containers                          |
-| `devc config [path]` | Display merged configuration                         |
-| `devc clean`         | Remove all stopped containers                        |
-| `devc init [path]`   | Generate a devcontainer.json with AI safety defaults |
+| Command              | Description                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `devc up [path]`     | Create and start a development container                                                          |
+| `devc attach [path]` | Open a shell in the container (alias: `devc shell`; starts it if stopped)                         |
+| `devc exec -- <cmd>` | Execute a command in a running container                                                          |
+| `devc stop [path]`   | Stop a container (respects active sessions)                                                       |
+| `devc down [path]`   | Stop and remove a container                                                                       |
+| `devc up --rebuild`  | Recreate the container (e.g. after config changes)                                                |
+| `devc list`          | List all managed containers                                                                       |
+| `devc status [path]` | Show container state and effective config                                                         |
+| `devc logs [path]`   | Show container logs (`-f` to follow)                                                              |
+| `devc config [path]` | Show effective config (subcommands: `set`, `validate`, `global`, `add-feature`, `remove-feature`) |
+| `devc clean`         | Remove all stopped containers                                                                     |
+| `devc init [path]`   | Generate a devcontainer.json with AI safety defaults                                              |
 
-### Global flags
+For config changes, `devc up` detects drift and prompts to rebuild; pass `--yes`
+or `--no` to answer non-interactively (e.g. in CI).
 
-```text
---log-level         Log level: debug, info, warn, error (default: info)
---output-format     Output format: text, json (default: text)
+### Output format
+
+Commands that print machine-readable data — `list`, `status`, and `config show` —
+accept `--output-format json` (default is human-readable `text`):
+
+```sh
+devc list --output-format json
+devc status --output-format json
+devc config show --output-format json
 ```
 
 ## Configuration

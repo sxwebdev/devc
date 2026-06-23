@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/agent"
@@ -22,13 +23,18 @@ func newConfigCmd() *cobra.Command {
 	cmd.AddCommand(
 		newConfigShowCmd(),
 		newConfigSetCmd(),
+		newConfigValidateCmd(),
+		newConfigGlobalCmd(),
 		newConfigAddFeatureCmd(),
 		newConfigRemoveFeatureCmd(),
 	)
 
-	// Keep backward compat: `devc config [path]` still shows config
+	// Keep backward compat: `devc config [path]` still shows config. The parent
+	// needs its own --output-format flag (subcommand flags aren't inherited) so
+	// `devc config --output-format json` parses before delegating to show.
+	addOutputFormatFlag(cmd)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return newConfigShowCmd().RunE(cmd, args)
+		return runConfigShow(args)
 	}
 	cmd.Args = cobra.MaximumNArgs(1)
 
@@ -36,46 +42,88 @@ func newConfigCmd() *cobra.Command {
 }
 
 func newConfigShowCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "show [path]",
-		Short: "Display merged configuration",
+		Short: "Display the effective (merged) configuration",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws := getWorkspaceFolder(args)
-
-			devCfg, err := config.LoadDevcontainerConfig(ws)
-			if err != nil {
-				return err
-			}
-
-			globalCfg, err := config.LoadGlobalConfig()
-			if err != nil {
-				return err
-			}
-
-			custom, err := config.ExtractDevcCustomization(devCfg)
-			if err != nil {
-				return err
-			}
-
-			merged := config.MergeCustomization(globalCfg, custom)
-
-			result := map[string]any{
-				"devcontainer":   devCfg,
-				"devc":           merged,
-				"containerName":  config.ContainerName(ws),
-				"workspaceMount": config.WorkspaceInContainer(devCfg, ws),
-			}
-
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(result); err != nil {
-				return fmt.Errorf("encoding config: %w", err)
-			}
-
-			return nil
+			return runConfigShow(args)
 		},
 	}
+
+	addOutputFormatFlag(cmd)
+	return cmd
+}
+
+// runConfigShow is shared by `config show` and the backward-compat bare
+// `config` command. It must NOT construct a fresh command (doing so re-runs
+// addOutputFormatFlag, whose StringVar would reset the shared flagOutputFormat
+// and clobber the value parsed for the invoked command).
+func runConfigShow(args []string) error {
+	ws := getWorkspaceFolder(args)
+
+	devCfg, merged, err := config.LoadMerged(ws)
+	if err != nil {
+		return err
+	}
+
+	if flagOutputFormat == "json" {
+		result := map[string]any{
+			"devcontainer":   devCfg,
+			"devc":           merged,
+			"containerName":  config.ContainerName(ws),
+			"workspaceMount": config.WorkspaceInContainer(devCfg, ws),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(result); err != nil {
+			return fmt.Errorf("encoding config: %w", err)
+		}
+		return nil
+	}
+
+	printConfigSummary(devCfg, merged, config.ContainerName(ws), config.WorkspaceInContainer(devCfg, ws))
+	return nil
+}
+
+// printConfigSummary renders the key effective-config fields in a readable form.
+// The full structure is available via `config show --output-format json`.
+func printConfigSummary(devCfg *types.DevContainerConfig, merged *types.DevcCustomization, containerName, workspaceMount string) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	row := func(k, v string) { _, _ = fmt.Fprintf(w, "%s\t%s\n", k, v) }
+
+	row("Container name:", containerName)
+	row("Workspace mount:", workspaceMount)
+	row("Image:", dashIfEmpty(devCfg.Image))
+	row("Agents:", dashIfEmpty(strings.Join(merged.ResolvedAgents(), ", ")))
+	row("Security profile:", dashIfEmpty(merged.SecurityProfile))
+
+	netMode, netAllow := "", 0
+	if merged.Network != nil {
+		netMode = merged.Network.Mode
+		netAllow = len(merged.Network.Allowlist)
+	}
+	row("Network:", dashIfEmpty(formatNetwork(netMode, netAllow)))
+
+	if merged.Resources != nil {
+		row("Resources:", formatResources(merged.Resources.CPUs, merged.Resources.Memory, merged.Resources.PidsLimit))
+	}
+	if merged.Preset != "" {
+		row("Preset:", merged.Preset)
+	}
+	if merged.CredentialPolicy != "" {
+		row("Credential policy:", merged.CredentialPolicy)
+	}
+	if merged.GitPolicy != "" {
+		row("Git policy:", merged.GitPolicy)
+	}
+	if names := merged.EnabledServiceNames(); len(names) > 0 {
+		row("Services:", strings.Join(names, ", "))
+	}
+	_ = w.Flush()
+
+	fmt.Println()
+	fmt.Println("Run 'devc config show --output-format json' for the full configuration.")
 }
 
 func newConfigSetCmd() *cobra.Command {
@@ -185,6 +233,9 @@ Examples:
 				changed = true
 			}
 			if securityFlag != "" {
+				if err := config.ValidateSecurityProfile(securityFlag); err != nil {
+					return err
+				}
 				custom.SecurityProfile = securityFlag
 				fmt.Printf("Security profile: %s\n", securityFlag)
 				changed = true
@@ -206,6 +257,9 @@ Examples:
 				changed = true
 			}
 			if networkFlag != "" {
+				if err := config.ValidateNetworkMode(networkFlag); err != nil {
+					return err
+				}
 				if custom.Network == nil {
 					custom.Network = &types.NetworkConfig{}
 				}
@@ -357,6 +411,71 @@ func newConfigRemoveFeatureCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newConfigValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate [path]",
+		Short: "Check the configuration for invalid values",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, merged, err := config.LoadMerged(getWorkspaceFolder(args))
+			if err != nil {
+				return err
+			}
+
+			if err := config.ValidateCustomization(merged); err != nil {
+				return err
+			}
+
+			fmt.Println("OK — configuration is valid")
+			return nil
+		},
+	}
+}
+
+func newConfigGlobalCmd() *cobra.Command {
+	var initFlag bool
+
+	cmd := &cobra.Command{
+		Use:   "global",
+		Short: "Show or initialize the global config (~/.devc/config.json)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := config.GlobalConfigPath()
+			if err != nil {
+				return err
+			}
+
+			if initFlag {
+				written, werr := config.WriteGlobalConfig(config.DefaultGlobalConfig())
+				if werr != nil {
+					return werr
+				}
+				fmt.Printf("Created %s\n", written)
+				return nil
+			}
+
+			fmt.Printf("Path:   %s\n", path)
+			if _, statErr := os.Stat(path); statErr == nil {
+				fmt.Println("Status: present")
+			} else {
+				fmt.Println("Status: not present (built-in defaults in use; run 'devc config global --init' to create it)")
+			}
+
+			globalCfg, err := config.LoadGlobalConfig()
+			if err != nil {
+				return err
+			}
+			fmt.Println("\nEffective global defaults:")
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(globalCfg.Defaults)
+		},
+	}
+
+	cmd.Flags().BoolVar(&initFlag, "init", false, "write a default ~/.devc/config.json")
+	return cmd
 }
 
 // resolveFeatureRef expands short feature names to full OCI references.

@@ -66,8 +66,9 @@ the rest of the preset.
 - Cloud credentials (`AWS_*`, `KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`, …)
 - Host home directory and host `~/.config`
 - Host Docker socket (never mounted into the agent container)
-- Protected in-repo secret files when `workspaceSecretsPolicy.mode=fail`
-  prevents startup
+- In-repo secret files: hidden from the agent dynamically (any path, any time)
+  under `workspaceSecretsPolicy.mode=hide` (the preset default), or blocked at
+  startup under `mode=fail`
 - Ability to `git push` (blocked under `gitPolicy=commitOnly`)
 - Outbound network beyond the allowlist — only when `network.enforce=true` and
   `iptables` is present (experimental)
@@ -81,7 +82,9 @@ the rest of the preset.
 - Anything you explicitly inject into the container
 - Any service you expose to the container
 - In-repo secret files when `workspaceSecretsPolicy` is disabled or set to
-  `off`/`readonly`
+  `off`/`readonly`. (With `mode=hide`, secrets are also hidden from any app you
+  run *inside* the container, since the FUSE filter cannot distinguish the agent
+  from other in-container processes — supply such secrets via env vars instead.)
 
 ## `credentialPolicy`
 
@@ -136,36 +139,56 @@ Some repositories contain local secret files (`.env`, `secrets.yaml`,
 service-account JSON, `.npmrc`, …). This policy controls what happens when such
 files are present.
 
-| Mode       | Behavior                                                                                                 |
-| ---------- | -------------------------------------------------------------------------------------------------------- |
-| `off`      | Do nothing (existing behavior).                                                                          |
-| `fail`     | Refuse to start and list the protected files. Recommended.                                               |
-| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                           |
-| `mask`     | Shadow each protected file with an empty file so the agent cannot read its contents (technical control). |
+| Mode       | Behavior                                                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `off`      | Do nothing (existing behavior).                                                                                                     |
+| `hide`     | Mount the workspace through a FUSE filter that hides matching files from the agent **dynamically** — any path, any time. Recommended. |
+| `fail`     | Refuse to start and list the protected files.                                                                                       |
+| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                                                      |
+| `mask`     | Shadow each protected file (present at startup) with an empty file (technical control).                                             |
 
-`mask` is a real technical control: each matched file is bind-mounted over with
-an empty, read-only file, so the agent sees it as empty rather than seeing the
-secret. The workspace stays writable; only the matched files are shadowed. Files
-created after container start are not masked.
+### `hide` (default for the secure preset)
 
-- Matching is shell-glob by file base name.
-- `allowPatterns` exempts example/sample files (`.env.example`, etc.).
-- The `.git` directory is always ignored.
-- Findings are reported as workspace-relative paths.
-- With `mode=fail`, the scan also runs on `devc exec` and `devc shell`/`attach`,
-  not just `devc up`. A secret file created **after** the container started
-  still blocks a new `exec`/`shell` session, so the gate can't be bypassed by
-  dropping a `.env` into a running container.
+`hide` is the strongest, agent-agnostic control and the reason the
+`secure-local-agent` preset exists: the host keeps full read/write access to its
+secret files, the container always starts, and the agent never sees them — even
+files created **after** the container started, anywhere in the tree.
+
+How it works: devc bind-mounts the real workspace to a backing path
+(`/var/devc/workspace-real`) and starts a small bundled FUSE filter
+(`devc-secretfs`, shipped inside devc — the image needs no extra packages) that
+presents a filtered view at the workspace path. Matching files return `ENOENT`
+on lookup and are omitted from directory listings, evaluated live on every
+filesystem operation. This protects **any** agent in the container, not just
+Claude Code.
+
+- The filter is mounted with a direct `mount(2)` (no `fusermount` needed) and
+  `allow_other` so the non-root agent can read it. This requires `/dev/fuse` and
+  `CAP_SYS_ADMIN`, which devc grants to the container **only** in `hide` mode
+  (it also sets `apparmor=unconfined`, required for `mount`). The FUSE daemon
+  runs as root; the agent stays non-root, so it never wields this capability.
+- If the FUSE mount fails to come up, `devc up` fails loudly — it never silently
+  falls back to exposing secrets.
+- **Tradeoff:** the filter hides files from *all* processes in the container,
+  including an app you run inside it. If a service in the container needs the
+  real `config.yaml`, supply it via an env var or a path outside the matched
+  patterns — the FS layer cannot tell "the agent" from "the app" (same user).
+- Matching: gitignore-style globs. A pattern without `/` matches by base name at
+  any depth (`config.yaml`, `*.pem`); a pattern with `/` or `**` matches the
+  relative path (`internal/**/*.key`). `allowPatterns` exempts example/sample
+  files. The `.git` directory is left visible.
+
+`mask`/`readonly` are mount-time controls and only cover files present at
+startup. `fail` refuses to start when a protected file is present and also
+re-checks on `devc exec`/`shell`/`attach`. Use `hide` unless you specifically
+want startup to fail on secrets.
 
 ### What to do if `.env` or `config.yaml` exists in the repo
 
-With `mode=fail`, `devc up` refuses to start and lists the offending files. To
-resolve:
-
-- Move the secret outside the repository and reference it from there, or
-- Keep only a safe `*.example` / `*.sample` file in the repo, or
-- As a last resort, set `mode` to `off` or `readonly` if you understand the
-  risk.
+With `hide` (the default), nothing — keep it. You read and edit it normally on
+the host; the agent simply never sees it. With `mode=fail`, `devc up` refuses to
+start and lists the offending files; move the secret out of the repo, keep only
+a safe `*.example`/`*.sample`, or switch to `hide`.
 
 ## `gitPolicy`
 
@@ -539,6 +562,18 @@ devc exec -- git push 2>&1 || echo "push blocked as expected"
 # Services reachable from the agent (DNS) and the host (localhost)
 devc exec -- psql "$DATABASE_URL" -c 'select 1'
 psql -h 127.0.0.1 -p 54321 -U app -d app -c 'select 1'
+```
+
+Workspace secrets policy (`mode=hide`, the preset default — agent never sees
+secrets, even ones created after startup; the host keeps full access):
+
+```bash
+devc up
+echo 'SECRET=1' > config.yaml                 # create a secret AFTER startup
+mkdir -p internal && echo 'k' > internal/app.secret.yaml
+devc exec -- cat /workspaces/<proj>/config.yaml 2>&1 || echo "hidden as expected"
+devc exec -- ls /workspaces/<proj> | grep config.yaml || echo "not even listed"
+cat config.yaml                               # host still reads it fine
 ```
 
 Workspace secrets policy (`mode=fail`):

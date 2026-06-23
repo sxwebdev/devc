@@ -30,6 +30,11 @@ type Profile struct {
 	EnvPassthrough []string          // Host env vars to forward into the container (e.g., API keys)
 	SetupFunc      func(containerName, hostWorkspace, containerWorkspace, containerHome string, runExec func(cmd []string, user string) error) error
 	ResolveCreds   func() *ResolvedCredentials
+	// SkillsDir is the agent's skills directory relative to the container user's
+	// home (e.g. ".claude/skills"). When set and a skills mount is configured,
+	// devc symlinks the skills mount target here so the agent discovers them.
+	// Empty means the agent has no known skills directory.
+	SkillsDir string
 }
 
 var knownProfiles = map[string]*Profile{
@@ -52,6 +57,7 @@ var knownProfiles = map[string]*Profile{
 		EnvVars:        map[string]string{},
 		EnvPassthrough: []string{"ANTHROPIC_API_KEY"},
 		ResolveCreds:   ResolveClaudeCredentials,
+		SkillsDir:      ".claude/skills",
 	},
 	"codex": {
 		Name:        "codex",

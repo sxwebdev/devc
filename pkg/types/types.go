@@ -57,7 +57,18 @@ type DevcCustomization struct {
 	GitPolicy              string                    `json:"gitPolicy,omitempty"` // none, commitOnly, full
 	Skills                 *SkillsConfig             `json:"skills,omitempty"`
 	Services               map[string]*ServiceConfig `json:"services,omitempty"` // sibling service containers (executed in a later milestone)
+	// AgentPermissionMode sets the agent's default permission mode inside the
+	// sandbox (e.g. Claude Code's permissions.defaultMode). Empty preserves the
+	// agent default. Values: default, acceptEdits, bypassPermissions.
+	AgentPermissionMode string `json:"agentPermissionMode,omitempty"`
 }
+
+// Agent permission modes (maps to Claude Code permissions.defaultMode).
+const (
+	AgentPermissionDefault     = "default"
+	AgentPermissionAcceptEdits = "acceptEdits"
+	AgentPermissionBypass      = "bypassPermissions"
+)
 
 // Credential policy values. Empty string is treated as CredentialPolicyLegacy.
 const (
@@ -80,13 +91,14 @@ const (
 	SecretsModeFail     = "fail"     // Refuse to start if protected files are present in the workspace.
 	SecretsModeMask     = "mask"     // Shadow protected files with empty read-only bind mounts so the agent sees them as empty.
 	SecretsModeReadonly = "readonly" // Mount protected files read-only (less safe; not used by the secure preset).
+	SecretsModeHide     = "hide"     // Mount the workspace through a FUSE filter that hides matching files from the agent dynamically (any path, any time).
 )
 
 // WorkspaceSecretsPolicy controls how local secret files inside the workspace
 // are handled before the agent gains access to it.
 type WorkspaceSecretsPolicy struct {
 	Enabled       bool     `json:"enabled,omitempty"`
-	Mode          string   `json:"mode,omitempty"` // off, fail, mask, readonly
+	Mode          string   `json:"mode,omitempty"` // off, fail, mask, readonly, hide
 	Patterns      []string `json:"patterns,omitempty"`
 	AllowPatterns []string `json:"allowPatterns,omitempty"`
 }

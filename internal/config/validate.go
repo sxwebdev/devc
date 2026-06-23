@@ -64,9 +64,13 @@ func ValidateEnums(c *types.DevcCustomization) error {
 		types.GitPolicyNone, types.GitPolicyCommitOnly, types.GitPolicyFull); err != nil {
 		return err
 	}
+	if err := validEnum("agent permission mode", c.AgentPermissionMode,
+		types.AgentPermissionDefault, types.AgentPermissionAcceptEdits, types.AgentPermissionBypass); err != nil {
+		return err
+	}
 	if c.WorkspaceSecretsPolicy != nil {
 		if err := validEnum("workspace secrets mode", c.WorkspaceSecretsPolicy.Mode,
-			types.SecretsModeOff, types.SecretsModeFail, types.SecretsModeMask, types.SecretsModeReadonly); err != nil {
+			types.SecretsModeOff, types.SecretsModeFail, types.SecretsModeMask, types.SecretsModeReadonly, types.SecretsModeHide); err != nil {
 			return err
 		}
 	}

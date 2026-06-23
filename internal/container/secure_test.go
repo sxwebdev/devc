@@ -28,6 +28,15 @@ func TestGitWrapperScript_BlocksPush(t *testing.T) {
 	if !strings.Contains(gitWrapperScript, "/usr/local/bin/git.real") {
 		t.Error("git wrapper installer must preserve the real binary at a stable path")
 	}
+	// The wrapper carries a marker so the installer can tell the real git apart
+	// from a previously-installed wrapper when both live at /usr/local/bin/git
+	// (as in the agent-dev-base image), instead of bailing out.
+	if !strings.Contains(gitWrapperScript, "devc-git-wrapper") {
+		t.Error("git wrapper must embed an identifying marker")
+	}
+	if !strings.Contains(gitWrapperScript, `grep -q "devc-git-wrapper" /usr/local/bin/git`) {
+		t.Error("installer must use the marker to detect an already-installed wrapper")
+	}
 }
 
 func TestServiceKeyValidation(t *testing.T) {
@@ -85,6 +94,15 @@ func TestEnforceWorkspaceSecrets(t *testing.T) {
 		c := &types.DevcCustomization{WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: types.SecretsModeMask}}
 		if err := enforceWorkspaceSecrets(ws, c); err != nil {
 			t.Errorf("mask mode should not block startup, got %v", err)
+		}
+	})
+
+	t.Run("hide does not block startup", func(t *testing.T) {
+		// hide is enforced live by the FUSE filter, so startup is never blocked
+		// even when protected files are present.
+		c := &types.DevcCustomization{WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: types.SecretsModeHide}}
+		if err := enforceWorkspaceSecrets(ws, c); err != nil {
+			t.Errorf("hide mode should not block startup, got %v", err)
 		}
 	})
 

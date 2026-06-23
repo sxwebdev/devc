@@ -1,16 +1,25 @@
 BINARY := devc
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
+SECRETFS_DIR := internal/secretfsbin/embedded
 
-.PHONY: build test clean install lint release
+.PHONY: build test clean install lint release secretfs-bin
 
-build:
+# Cross-build the devc-secretfs FUSE helper for the container architectures and
+# place it where go:embed picks it up. Pure Go (no cgo), so it cross-compiles
+# from any host. devc copies the matching binary into the container at runtime,
+# so the image needs no extra packages.
+secretfs-bin:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o $(SECRETFS_DIR)/devc-secretfs-linux-amd64 ./cmd/secretfs
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o $(SECRETFS_DIR)/devc-secretfs-linux-arm64 ./cmd/secretfs
+
+build: secretfs-bin
 	go build $(LDFLAGS) -o bin/$(BINARY) .
 
-install:
+install: secretfs-bin
 	go install $(LDFLAGS) .
 
-test:
+test: secretfs-bin
 	go test ./...
 
 lint:

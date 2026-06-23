@@ -15,6 +15,12 @@ import (
 	"github.com/sxwebdev/devc/pkg/types"
 )
 
+// FSBackingPath is where devc bind-mounts the real workspace inside the
+// container when workspaceSecretsPolicy.mode is "hide". The devc-secretfs FUSE
+// filter then presents a filtered view at the canonical workspace path, hiding
+// protected files from the agent while the host keeps full access.
+const FSBackingPath = "/var/devc/workspace-real"
+
 // defaultPatterns lists files that commonly carry secrets. It mirrors the
 // patterns documented for workspaceSecretsPolicy.
 var defaultPatterns = []string{

@@ -20,6 +20,7 @@ import (
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/credpolicy"
+	"github.com/sxwebdev/devc/internal/secrets"
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/pkg/types"
 )
@@ -216,11 +217,22 @@ func (c *Client) CreateAndStart(
 	}
 	readOnly := mountMode == "ro"
 
+	// In "hide" mode the real workspace is bind-mounted to a backing path and a
+	// FUSE filter (started by the manager after create) presents a filtered view
+	// at wsTarget, so the agent never sees protected files even if created later.
+	secretsHide := custom.WorkspaceSecretsPolicy != nil &&
+		custom.WorkspaceSecretsPolicy.Enabled &&
+		custom.WorkspaceSecretsPolicy.Mode == types.SecretsModeHide
+	wsBindTarget := wsTarget
+	if secretsHide {
+		wsBindTarget = secrets.FSBackingPath
+	}
+
 	mounts := []mount.Mount{
 		{
 			Type:     mount.TypeBind,
 			Source:   workspaceFolder,
-			Target:   wsTarget,
+			Target:   wsBindTarget,
 			ReadOnly: readOnly,
 		},
 	}
@@ -294,6 +306,20 @@ func (c *Client) CreateAndStart(
 	// it cannot flush the rules the root init script installs.
 	if custom.Network != nil && custom.Network.Enforce && netModeAllowsEgressFilter(custom, profile) {
 		hostCfg.CapAdd = appendUnique(hostCfg.CapAdd, "NET_ADMIN", "NET_RAW")
+	}
+
+	// FUSE secret-hiding ("hide" mode) needs /dev/fuse and CAP_SYS_ADMIN to
+	// mount(2) inside the container. The FUSE daemon runs as root; the agent
+	// stays non-root, so it never wields this capability. apparmor=unconfined is
+	// required because Docker's default AppArmor profile denies mount.
+	if secretsHide {
+		hostCfg.CapAdd = appendUnique(hostCfg.CapAdd, "SYS_ADMIN")
+		hostCfg.Devices = append(hostCfg.Devices, container.DeviceMapping{
+			PathOnHost:        "/dev/fuse",
+			PathInContainer:   "/dev/fuse",
+			CgroupPermissions: "rwm",
+		})
+		hostCfg.SecurityOpt = append(hostCfg.SecurityOpt, "apparmor=unconfined")
 	}
 
 	// Resources
@@ -517,6 +543,39 @@ func (c *Client) ExecAs(name string, command []string, opts ExecOptions) error {
 	}
 
 	return nil
+}
+
+// ExecCapture runs a command as the given user (empty = container default) and
+// returns its captured stdout. stderr is folded into the error on non-zero exit.
+func (c *Client) ExecCapture(name string, command []string, user string) (string, error) {
+	ctx := context.Background()
+
+	createOpts := dockerclient.ExecCreateOptions{
+		Cmd:          command,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+	if user != "" {
+		createOpts.User = user
+	}
+
+	execResult, err := c.api.ExecCreate(ctx, name, createOpts)
+	if err != nil {
+		return "", fmt.Errorf("creating exec: %w", err)
+	}
+	attachResult, err := c.api.ExecAttach(ctx, execResult.ID, dockerclient.ExecAttachOptions{})
+	if err != nil {
+		return "", fmt.Errorf("attaching exec: %w", err)
+	}
+	defer attachResult.Close()
+
+	var outBuf, errBuf bytes.Buffer
+	_, _ = stdcopy.StdCopy(&outBuf, &errBuf, attachResult.Reader)
+
+	if inspectResult, inspErr := c.api.ExecInspect(ctx, execResult.ID, dockerclient.ExecInspectOptions{}); inspErr == nil && inspectResult.ExitCode != 0 {
+		return outBuf.String(), fmt.Errorf("exit status %d: %s", inspectResult.ExitCode, strings.TrimSpace(errBuf.String()))
+	}
+	return outBuf.String(), nil
 }
 
 // ListManaged returns all containers with the devc.managed label.

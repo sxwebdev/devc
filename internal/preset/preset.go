@@ -49,17 +49,20 @@ func Names() []string {
 }
 
 // secureLocalAgent is the curated safe-by-default workflow: the agent edits the
-// workspace and commits, but host credentials are withheld, in-repo secrets
-// block startup, and `git push` is disabled.
+// workspace and commits, but host credentials are withheld, in-repo secrets are
+// hidden from the agent (dynamically, via the FUSE filter — the host keeps full
+// access and the container always starts), `git push` is disabled, and the agent
+// runs without per-edit confirmation prompts because the sandbox is the boundary.
 func secureLocalAgent() *types.DevcCustomization {
 	readonly := true
 	return &types.DevcCustomization{
-		SecurityProfile:  "moderate",
-		CredentialPolicy: types.CredentialPolicyAgentOnly,
-		GitPolicy:        types.GitPolicyCommitOnly,
+		SecurityProfile:     "moderate",
+		CredentialPolicy:    types.CredentialPolicyAgentOnly,
+		GitPolicy:           types.GitPolicyCommitOnly,
+		AgentPermissionMode: types.AgentPermissionBypass,
 		WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{
 			Enabled: true,
-			Mode:    types.SecretsModeFail,
+			Mode:    types.SecretsModeHide,
 		},
 		Skills: &types.SkillsConfig{
 			Enabled:  true,

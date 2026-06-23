@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/sxwebdev/devc/internal/services"
 	"github.com/sxwebdev/devc/pkg/types"
 )
 
@@ -13,23 +14,24 @@ import (
 // For anything else, set containerPort explicitly and use agentEnv for the
 // connection string.
 
-// defaultServicePorts maps a conventional service key to its default port.
-var defaultServicePorts = map[string]int{
-	"postgres":      5432,
-	"postgresql":    5432,
-	"redis":         6379,
-	"valkey":        6379,
-	"mysql":         3306,
-	"mariadb":       3306,
-	"mongo":         27017,
-	"mongodb":       27017,
-	"rabbitmq":      5672,
-	"nats":          4222,
-	"kafka":         9092,
-	"clickhouse":    9000,
-	"elasticsearch": 9200,
-	"opensearch":    9200,
-	"memcached":     11211,
+// serviceAliases maps alternate service keys to their canonical catalog name so
+// a devcontainer.json that uses, e.g., "postgresql" still resolves defaults.
+var serviceAliases = map[string]string{
+	"postgresql": "postgres",
+	"mongodb":    "mongo",
+}
+
+// defaultServicePort returns the convention default container port for a known
+// service key, sourced from the service catalog (the single source of truth for
+// ports) with aliases resolved. Returns 0 for unknown keys.
+func defaultServicePort(name string) int {
+	if canonical, ok := serviceAliases[name]; ok {
+		name = canonical
+	}
+	if tmpl, ok := services.Template(name); ok {
+		return tmpl.ContainerPort
+	}
+	return 0
 }
 
 // connStringBuilder derives a "KEY=value" connection env var for the agent from

@@ -3,6 +3,8 @@ module github.com/sxwebdev/devc
 go 1.26.4
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/hanwen/go-fuse/v2 v2.10.1
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/spf13/cobra v1.10.2

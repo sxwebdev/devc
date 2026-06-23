@@ -13,26 +13,27 @@ import (
 // configSnapshot captures the fields that affect container build/setup.
 // A change to any of these means the container should be rebuilt.
 type configSnapshot struct {
-	Image             string            `json:"image"`
-	Features          map[string]any    `json:"features,omitempty"`
-	Agents            []string          `json:"agents,omitempty"`
-	SecurityProfile   string            `json:"securityProfile,omitempty"`
-	PostCreateCommand any               `json:"postCreateCommand,omitempty"`
-	OnCreateCommand   any               `json:"onCreateCommand,omitempty"`
-	ContainerEnv      map[string]string `json:"containerEnv,omitempty"`
-	ForwardPorts      []any             `json:"forwardPorts,omitempty"`
-	EnvPassthrough    []string          `json:"envPassthrough,omitempty"`
-	ResourcesCPUs     string            `json:"cpus,omitempty"`
-	ResourcesMemory   string            `json:"memory,omitempty"`
-	NetworkMode       string            `json:"networkMode,omitempty"`
-	NetworkEnforce    bool              `json:"networkEnforce,omitempty"`
-	NetworkAllowlist  []string          `json:"networkAllowlist,omitempty"`
-	AgentMounts       []mountSnapshot   `json:"agentMounts,omitempty"`
-	CredentialPolicy  string            `json:"credentialPolicy,omitempty"`
-	GitPolicy         string            `json:"gitPolicy,omitempty"`
-	Secrets           *secretsSnapshot  `json:"secrets,omitempty"`
-	Skills            *skillsSnapshot   `json:"skills,omitempty"`
-	Services          []serviceSnapshot `json:"services,omitempty"`
+	Image               string            `json:"image"`
+	Features            map[string]any    `json:"features,omitempty"`
+	Agents              []string          `json:"agents,omitempty"`
+	SecurityProfile     string            `json:"securityProfile,omitempty"`
+	PostCreateCommand   any               `json:"postCreateCommand,omitempty"`
+	OnCreateCommand     any               `json:"onCreateCommand,omitempty"`
+	ContainerEnv        map[string]string `json:"containerEnv,omitempty"`
+	ForwardPorts        []any             `json:"forwardPorts,omitempty"`
+	EnvPassthrough      []string          `json:"envPassthrough,omitempty"`
+	ResourcesCPUs       string            `json:"cpus,omitempty"`
+	ResourcesMemory     string            `json:"memory,omitempty"`
+	NetworkMode         string            `json:"networkMode,omitempty"`
+	NetworkEnforce      bool              `json:"networkEnforce,omitempty"`
+	NetworkAllowlist    []string          `json:"networkAllowlist,omitempty"`
+	AgentMounts         []mountSnapshot   `json:"agentMounts,omitempty"`
+	CredentialPolicy    string            `json:"credentialPolicy,omitempty"`
+	GitPolicy           string            `json:"gitPolicy,omitempty"`
+	AgentPermissionMode string            `json:"agentPermissionMode,omitempty"`
+	Secrets             *secretsSnapshot  `json:"secrets,omitempty"`
+	Skills              *skillsSnapshot   `json:"skills,omitempty"`
+	Services            []serviceSnapshot `json:"services,omitempty"`
 }
 
 type secretsSnapshot struct {
@@ -67,16 +68,17 @@ type mountSnapshot struct {
 // is built and configured. Two configs with the same hash produce identical containers.
 func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomization) string {
 	snap := configSnapshot{
-		Image:             devCfg.Image,
-		Features:          devCfg.Features,
-		Agents:            custom.ResolvedAgents(),
-		SecurityProfile:   custom.SecurityProfile,
-		PostCreateCommand: devCfg.PostCreateCommand,
-		OnCreateCommand:   devCfg.OnCreateCommand,
-		ContainerEnv:      devCfg.ContainerEnv,
-		CredentialPolicy:  custom.CredentialPolicy,
-		GitPolicy:         custom.GitPolicy,
-		ForwardPorts:      devCfg.ForwardPorts,
+		Image:               devCfg.Image,
+		Features:            devCfg.Features,
+		Agents:              custom.ResolvedAgents(),
+		SecurityProfile:     custom.SecurityProfile,
+		PostCreateCommand:   devCfg.PostCreateCommand,
+		OnCreateCommand:     devCfg.OnCreateCommand,
+		ContainerEnv:        devCfg.ContainerEnv,
+		CredentialPolicy:    custom.CredentialPolicy,
+		GitPolicy:           custom.GitPolicy,
+		AgentPermissionMode: custom.AgentPermissionMode,
+		ForwardPorts:        devCfg.ForwardPorts,
 	}
 
 	if len(custom.Services) > 0 {

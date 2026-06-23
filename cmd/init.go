@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,17 +13,19 @@ import (
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/preset"
 	"github.com/sxwebdev/devc/internal/secrets"
+	"github.com/sxwebdev/devc/internal/services"
 	"github.com/sxwebdev/devc/pkg/types"
 )
 
 func newInitCmd() *cobra.Command {
 	var (
-		agentFlag   string
-		imageFlag   string
-		presetFlag  string
-		listImages  bool
-		listAgents  bool
-		listPresets bool
+		agentFlag    string
+		imageFlag    string
+		presetFlag   string
+		servicesFlag string
+		listImages   bool
+		listAgents   bool
+		listPresets  bool
 	)
 
 	cmd := &cobra.Command{
@@ -36,6 +39,10 @@ all available images. If --image is not specified, defaults to "base" (Ubuntu).
 Use --agent to pre-configure an AI coding agent. This adds the agent's
 binary install command, network allowlist entries, and environment
 variables. Use --list-agents to see options.
+
+Use --services to scaffold sibling service containers (e.g. postgres, redis),
+comma-separated. None are added by default. Run 'devc service list' to see the
+catalog, or add them later with 'devc service add'.
 
 You can also pass a full image reference directly (e.g., --image myregistry/myimage:tag).`,
 		Args: cobra.MaximumNArgs(1),
@@ -109,6 +116,22 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 					"session": map[string]any{
 						"stopOnLastDetach": true,
 					},
+				}
+			}
+
+			// Scaffold opt-in sibling services (postgres, redis, ...) into both the
+			// preset and non-preset paths.
+			var serviceNames []string
+			if servicesFlag != "" {
+				svcMap, names, err := buildServicesMap(servicesFlag)
+				if err != nil {
+					return err
+				}
+				// Skip the assignment when nothing resolved (e.g. "--services ,")
+				// so the output never carries a junk "services": null key.
+				if len(svcMap) > 0 {
+					devcConfig["services"] = svcMap
+					serviceNames = names
 				}
 			}
 
@@ -208,6 +231,9 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 					}
 				}
 			}
+			if len(serviceNames) > 0 {
+				fmt.Printf("Services: %s\n", strings.Join(serviceNames, ", "))
+			}
 			fmt.Println()
 			fmt.Println("Next: run 'devc up' to start the container")
 			return nil
@@ -217,6 +243,7 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 	cmd.Flags().StringVar(&agentFlag, "agent", "", "pre-configure AI agents, comma-separated (use --list-agents to see options)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "base image name or full reference (use --list-images to see options)")
 	cmd.Flags().StringVar(&presetFlag, "preset", "", "apply a security preset (use --list-presets to see options)")
+	cmd.Flags().StringVar(&servicesFlag, "services", "", "comma-separated sibling services to scaffold (e.g. postgres,redis; see 'devc service list')")
 	cmd.Flags().BoolVar(&listImages, "list-images", false, "list available base images")
 	cmd.Flags().BoolVar(&listAgents, "list-agents", false, "list available AI agent profiles")
 	cmd.Flags().BoolVar(&listPresets, "list-presets", false, "list available security presets")
@@ -262,42 +289,49 @@ func secureDevcConfig(presetName string) map[string]any {
 	devc["session"] = map[string]any{
 		"stopOnLastDetach": true,
 	}
-	devc["services"] = map[string]any{
-		"postgres": map[string]any{
-			"enabled":       true,
-			"image":         "postgres:16",
-			"containerPort": 5432,
-			"hostPort":      54321,
-			"hostIP":        "127.0.0.1",
-			"env": map[string]any{
-				"POSTGRES_USER":     "app",
-				"POSTGRES_PASSWORD": "app",
-				"POSTGRES_DB":       "app",
-			},
-			"volumes": []any{
-				map[string]any{"name": "postgres-data", "target": "/var/lib/postgresql/data"},
-			},
-		},
-		"redis": map[string]any{
-			"enabled":       true,
-			"image":         "redis:7",
-			"containerPort": 6379,
-			"hostPort":      63791,
-			"hostIP":        "127.0.0.1",
-			"volumes": []any{
-				map[string]any{"name": "redis-data", "target": "/data"},
-			},
-		},
-	}
+	// Services are opt-in via `devc init --services` / `devc service add`, never
+	// scaffolded by default — a project that needs no database should not get one.
 	return devc
+}
+
+// buildServicesMap parses a comma-separated service list, validates each name
+// against the catalog, and renders the chosen service templates into a generic
+// JSON object that merges cleanly into the devc customization map. It returns
+// the rendered map and the sorted, deduplicated list of service names added.
+func buildServicesMap(csv string) (map[string]any, []string, error) {
+	svcConfigs := make(map[string]*types.ServiceConfig)
+	for name := range strings.SplitSeq(csv, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		tmpl, ok := services.Template(name)
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown service %q; run 'devc service list' to see options", name)
+		}
+		svcConfigs[name] = tmpl
+	}
+	if len(svcConfigs) == 0 {
+		return nil, nil, nil
+	}
+
+	svcMap, err := config.ToRawMap(svcConfigs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	names := make([]string, 0, len(svcConfigs))
+	for name := range svcConfigs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return svcMap, names, nil
 }
 
 // customizationToMap renders a customization as a generic JSON object so the
 // init flow can extend it with fields that are not part of the preset.
 func customizationToMap(c *types.DevcCustomization) map[string]any {
-	data, _ := json.Marshal(c)
-	var m map[string]any
-	_ = json.Unmarshal(data, &m)
+	m, _ := config.ToRawMap(c)
 	return m
 }
 

@@ -167,6 +167,9 @@ func applyOverrides(dst *types.DevcCustomization, src *types.DevcCustomization) 
 	if src.GitPolicy != "" {
 		dst.GitPolicy = src.GitPolicy
 	}
+	if src.AgentPermissionMode != "" {
+		dst.AgentPermissionMode = src.AgentPermissionMode
+	}
 	if src.Skills != nil {
 		dst.Skills = src.Skills
 	}

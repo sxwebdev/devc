@@ -13,6 +13,7 @@ import (
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/credpolicy"
 	"github.com/sxwebdev/devc/internal/docker"
+	"github.com/sxwebdev/devc/internal/secretfsbin"
 	"github.com/sxwebdev/devc/internal/secrets"
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/internal/session"
@@ -317,6 +318,14 @@ func (m *Manager) createContainer(
 	containerHome := m.Docker.ResolveHomeDir(effectiveImage, secProfile.RunAsUser)
 	wsInContainer := config.WorkspaceInContainer(devCfg, workspaceFolder)
 
+	// Start the secret-hiding FUSE filter before anything reads the workspace, so
+	// the agent (and lifecycle commands) only ever see the filtered view. A
+	// failure here is fatal: the user opted into hiding secrets from the agent, so
+	// we must not silently fall back to exposing them.
+	if err := m.setupSecretFS(containerName, wsInContainer, custom); err != nil {
+		return fmt.Errorf("setting up secret hiding (workspaceSecretsPolicy mode=hide): %w", err)
+	}
+
 	// Resolve the credential policy once: it gates whether host agent config is
 	// copied into the container.
 	cred := credpolicy.Decide(custom.CredentialPolicy)
@@ -339,6 +348,7 @@ func (m *Manager) createContainer(
 		// copying the host's global Claude config into the container.
 		if p.Name == "claude" {
 			m.setupClaudePathMapping(containerName, workspaceFolder, wsInContainer, containerHome, cred.AllowHostAgentConfig)
+			m.setupClaudePermissions(containerName, containerHome, custom.AgentPermissionMode, cred.AllowHostAgentConfig)
 		}
 	}
 
@@ -374,6 +384,11 @@ func (m *Manager) createContainer(
 	for _, p := range agentProfiles {
 		m.linkAgentBinary(containerName, p, containerHome)
 	}
+
+	// Make the skills mount discoverable by each agent. The mount lands at a
+	// generic target (default /skills); agents look in their own dir (Claude:
+	// ~/.claude/skills), so symlink the target there.
+	m.linkSkillsForAgents(containerName, containerHome, custom, agentProfiles)
 
 	// Apply egress firewall last, after installs/lifecycle have run, so setup
 	// traffic isn't blocked but the agent's own traffic is restricted. Use the
@@ -689,6 +704,11 @@ func (m *Manager) linkAgentBinary(containerName string, profile *agent.Profile, 
 // (and their arguments, e.g. `git -C dir push` / `git -c k=v push`) so the push
 // block cannot be bypassed with a leading flag. The installer is idempotent: the
 // real binary is preserved once at /usr/local/bin/git.real and reused on re-run.
+//
+// Some base images (e.g. agent-dev-base) ship the real git at /usr/local/bin/git
+// — exactly where the wrapper installs itself. The installer tells the real
+// binary apart from a previously-installed wrapper via the marker comment below,
+// so it correctly backs up the real git instead of refusing to install.
 const gitWrapperScript = `set -e
 mkdir -p /usr/local/bin
 if [ -x /usr/local/bin/git.real ]; then
@@ -699,8 +719,8 @@ else
     echo "devc: git not found, skipping gitPolicy wrapper" >&2
     exit 0
   fi
-  if [ "$REAL_GIT" = "/usr/local/bin/git" ]; then
-    echo "devc: cannot locate real git binary, skipping gitPolicy wrapper" >&2
+  if [ "$REAL_GIT" = "/usr/local/bin/git" ] && grep -q "devc-git-wrapper" /usr/local/bin/git 2>/dev/null; then
+    echo "devc: git wrapper already installed but real git binary missing, skipping gitPolicy wrapper" >&2
     exit 0
   fi
   cp "$REAL_GIT" /usr/local/bin/git.real
@@ -708,6 +728,7 @@ else
 fi
 cat > /usr/local/bin/git <<EOF
 #!/bin/sh
+# devc-git-wrapper: blocks 'git push' under gitPolicy=commitOnly.
 # Find the subcommand, skipping leading global options and their arguments.
 sub=
 skip=0
@@ -734,6 +755,36 @@ func (m *Manager) installGitWrapper(containerName string) {
 	}
 }
 
+// linkSkillsForAgents symlinks the skills mount target into each agent's own
+// skills directory so the agent discovers them. The mount lands at a generic
+// target (default /skills) which agents do not scan; e.g. Claude reads
+// ~/.claude/skills. Runs as the container user so the symlink is user-owned.
+func (m *Manager) linkSkillsForAgents(containerName, containerHome string, custom *types.DevcCustomization, profiles []*agent.Profile) {
+	if custom.Skills == nil || !custom.Skills.Enabled {
+		return
+	}
+	target := custom.Skills.Target
+	if target == "" {
+		target = "/skills"
+	}
+	for _, p := range profiles {
+		if p.SkillsDir == "" {
+			continue
+		}
+		dst := containerHome + "/" + p.SkillsDir
+		parent := filepath.Dir(dst)
+		// Link only when the mount exists and the agent has no real skills dir of
+		// its own (avoid nesting the link inside an existing directory).
+		script := fmt.Sprintf(
+			`if [ -e %q ] && { [ ! -e %q ] || [ -L %q ]; }; then mkdir -p %q && ln -sfn %q %q; fi; true`,
+			target, dst, dst, parent, target, dst,
+		)
+		if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", script}, docker.ExecOptions{}); err != nil {
+			m.warn("could not link skills for %s: %v", p.Name, err)
+		}
+	}
+}
+
 // enforceWorkspaceSecrets applies the workspace secrets policy before container
 // startup. mode=fail aborts when protected files are present; off/readonly/mask
 // are technical controls applied at mount time during container creation, so
@@ -750,9 +801,10 @@ func enforceWorkspaceSecrets(workspaceFolder string, custom *types.DevcCustomiza
 	}
 
 	switch mode {
-	case types.SecretsModeOff, types.SecretsModeReadonly, types.SecretsModeMask:
-		// readonly and mask are technical controls applied at mount time during
-		// container creation; nothing to enforce before startup.
+	case types.SecretsModeOff, types.SecretsModeReadonly, types.SecretsModeMask, types.SecretsModeHide:
+		// readonly/mask are technical controls applied at mount time, and hide is
+		// enforced live by the FUSE filter; nothing to gate before startup. (hide,
+		// unlike fail, never blocks startup — that is its whole point.)
 		return nil
 	case types.SecretsModeFail:
 		findings, err := secrets.Scan(workspaceFolder, sp.Patterns, sp.AllowPatterns)
@@ -765,6 +817,111 @@ func enforceWorkspaceSecrets(workspaceFolder string, custom *types.DevcCustomiza
 		return nil
 	default:
 		return fmt.Errorf("unknown workspaceSecretsPolicy mode %q", mode)
+	}
+}
+
+// setupSecretFS copies the devc-secretfs helper into the container and starts it
+// as a FUSE filter over the workspace, hiding files that match the secret
+// patterns from the agent dynamically (any path, any time). The real workspace
+// is bind-mounted at secrets.FSBackingPath (by the docker layer) and the
+// filtered view is mounted at wsTarget. No-op unless mode=hide.
+func (m *Manager) setupSecretFS(containerName, wsTarget string, custom *types.DevcCustomization) error {
+	sp := custom.WorkspaceSecretsPolicy
+	if sp == nil || !sp.Enabled || sp.Mode != types.SecretsModeHide {
+		return nil
+	}
+
+	patterns := sp.Patterns
+	if len(patterns) == 0 {
+		patterns = secrets.DefaultPatterns()
+	}
+	allow := sp.AllowPatterns
+	if len(allow) == 0 {
+		allow = secrets.DefaultAllowPatterns()
+	}
+
+	// Pick the helper build matching the container architecture.
+	archOut, err := m.Docker.ExecCapture(containerName, []string{"uname", "-m"}, "root")
+	if err != nil {
+		return fmt.Errorf("detecting container architecture: %w", err)
+	}
+	goarch := unameToGoArch(strings.TrimSpace(archOut))
+	bin, err := secretfsbin.Binary(goarch)
+	if err != nil {
+		return err
+	}
+
+	tmpDir, err := os.MkdirTemp("", "devc-secretfs-")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpBin := filepath.Join(tmpDir, "devc-secretfs")
+	if err := os.WriteFile(tmpBin, bin, 0o755); err != nil {
+		return fmt.Errorf("writing helper: %w", err)
+	}
+	if err := m.Docker.CopyInto(containerName, tmpBin, "/usr/local/bin"); err != nil {
+		return fmt.Errorf("copying helper into container: %w", err)
+	}
+
+	// chmod 0700 the backing's parent so the non-root agent cannot traverse into
+	// the UNFILTERED backing mount and read secrets directly, bypassing the FUSE
+	// view. The FUSE daemon runs as root, so it still reaches the backing.
+	backingParent := filepath.Dir(secrets.FSBackingPath)
+	prep := fmt.Sprintf(
+		`chmod 0755 /usr/local/bin/devc-secretfs && mkdir -p %s %s && chmod 0700 %s`,
+		shQuote(wsTarget), shQuote(secrets.FSBackingPath), shQuote(backingParent),
+	)
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", prep}, docker.ExecOptions{User: "root"}); err != nil {
+		return fmt.Errorf("preparing mountpoint: %w", err)
+	}
+
+	// Start detached (new session) so it survives the exec connection closing.
+	// Every interpolated value is single-quoted: patterns come from
+	// devcontainer.json and run in a root shell, so an unquoted $/backtick would
+	// be a command-injection vector.
+	start := fmt.Sprintf(
+		`setsid /usr/local/bin/devc-secretfs --backing %s --mount %s --deny %s --allow %s --uid 1000 --gid 1000 `+
+			`</dev/null >/var/log/devc-secretfs.log 2>&1 &`,
+		shQuote(secrets.FSBackingPath), shQuote(wsTarget),
+		shQuote(strings.Join(patterns, ",")), shQuote(strings.Join(allow, ",")),
+	)
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", start}, docker.ExecOptions{User: "root"}); err != nil {
+		return fmt.Errorf("starting helper: %w", err)
+	}
+
+	// Wait for the mount to appear. Match on the fixed FUSE device name rather
+	// than interpolating wsTarget into a regex (which would break on paths with
+	// spaces or glob/regex metacharacters).
+	check := `for i in $(seq 1 50); do if grep -q "^devc-secretfs " /proc/mounts; then exit 0; fi; sleep 0.1; done; exit 1`
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", check}, docker.ExecOptions{User: "root"}); err != nil {
+		logOut, _ := m.Docker.ExecCapture(containerName, []string{"cat", "/var/log/devc-secretfs.log"}, "root")
+		return fmt.Errorf("FUSE mount did not come up at %s: %w\n%s", wsTarget, err, strings.TrimSpace(logOut))
+	}
+
+	// The FUSE passthrough reports the backing file owner, which can differ from
+	// the container user and trip git's "dubious ownership" guard. Mark the
+	// workspace safe for git (as the container user) so git keeps working.
+	safe := fmt.Sprintf(`git config --global --add safe.directory %s 2>/dev/null; true`, shQuote(wsTarget))
+	_ = m.Docker.ExecAs(containerName, []string{"sh", "-c", safe}, docker.ExecOptions{})
+	return nil
+}
+
+// shQuote wraps s in single quotes for safe interpolation into an `sh -c`
+// command, escaping any embedded single quotes.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// unameToGoArch maps `uname -m` output to a Go GOARCH value.
+func unameToGoArch(uname string) string {
+	switch uname {
+	case "aarch64", "arm64":
+		return "arm64"
+	case "x86_64", "amd64":
+		return "amd64"
+	default:
+		return uname
 	}
 }
 
@@ -924,6 +1081,78 @@ func patchClaudeGlobalConfig(hostConfigPath, containerWorkspace string) ([]byte,
 	}
 
 	cfg["projects"] = projects
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// setupClaudePermissions writes ~/.claude/settings.json inside the container so
+// the agent runs with the configured default permission mode (e.g.
+// bypassPermissions in a sandbox, so it edits files without confirmation). The
+// host settings.json is merged in when the credential policy allows it, so other
+// keys the user already set are preserved.
+func (m *Manager) setupClaudePermissions(containerName, containerHome, mode string, includeHostConfig bool) {
+	if mode == "" {
+		return
+	}
+
+	hostSettingsPath := ""
+	if includeHostConfig {
+		if hostHome, err := os.UserHomeDir(); err == nil {
+			hostSettingsPath = filepath.Join(hostHome, ".claude", "settings.json")
+		}
+	}
+	data, err := patchClaudeSettings(hostSettingsPath, mode)
+	if err != nil {
+		m.warn("could not generate Claude settings: %v", err)
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "devc-claude-settings-")
+	if err != nil {
+		m.warn("could not create temp dir for Claude settings: %v", err)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpFile := filepath.Join(tmpDir, "settings.json")
+	if err := os.WriteFile(tmpFile, data, 0o644); err != nil {
+		m.warn("could not write temp Claude settings: %v", err)
+		return
+	}
+
+	dst := containerHome + "/.claude"
+	mkdir := fmt.Sprintf(`mkdir -p %s && chown -R 1000:1000 %s`, dst, dst)
+	_ = m.Docker.ExecAs(containerName, []string{"sh", "-c", mkdir}, docker.ExecOptions{User: "root"})
+	if err := m.Docker.CopyInto(containerName, tmpFile, dst); err != nil {
+		m.warn("could not copy Claude settings into container: %v", err)
+		return
+	}
+	chown := fmt.Sprintf("chown 1000:1000 %s/settings.json 2>/dev/null; true", dst)
+	_ = m.Docker.ExecAs(containerName, []string{"sh", "-c", chown}, docker.ExecOptions{User: "root"})
+}
+
+// patchClaudeSettings reads the host ~/.claude/settings.json (or starts empty),
+// sets permissions.defaultMode to mode, and returns the merged JSON. All other
+// fields are preserved.
+func patchClaudeSettings(hostSettingsPath, mode string) ([]byte, error) {
+	var cfg map[string]any
+	if hostSettingsPath != "" {
+		if data, err := os.ReadFile(hostSettingsPath); err == nil {
+			if jsonErr := json.Unmarshal(data, &cfg); jsonErr != nil {
+				cfg = nil
+			}
+		}
+	}
+	if cfg == nil {
+		cfg = make(map[string]any)
+	}
+
+	perms, _ := cfg["permissions"].(map[string]any)
+	if perms == nil {
+		perms = make(map[string]any)
+	}
+	perms["defaultMode"] = mode
+	cfg["permissions"] = perms
+
 	return json.MarshalIndent(cfg, "", "  ")
 }
 

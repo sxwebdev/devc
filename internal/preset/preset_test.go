@@ -18,8 +18,11 @@ func TestApply_SecureLocalAgent(t *testing.T) {
 		if c.GitPolicy != types.GitPolicyCommitOnly {
 			t.Errorf("gitPolicy = %q, want commitOnly", c.GitPolicy)
 		}
-		if c.WorkspaceSecretsPolicy == nil || !c.WorkspaceSecretsPolicy.Enabled || c.WorkspaceSecretsPolicy.Mode != types.SecretsModeFail {
-			t.Errorf("workspaceSecretsPolicy = %+v, want enabled fail", c.WorkspaceSecretsPolicy)
+		if c.WorkspaceSecretsPolicy == nil || !c.WorkspaceSecretsPolicy.Enabled || c.WorkspaceSecretsPolicy.Mode != types.SecretsModeHide {
+			t.Errorf("workspaceSecretsPolicy = %+v, want enabled hide", c.WorkspaceSecretsPolicy)
+		}
+		if c.AgentPermissionMode != types.AgentPermissionBypass {
+			t.Errorf("agentPermissionMode = %q, want bypassPermissions", c.AgentPermissionMode)
 		}
 		if c.Skills == nil || !c.Skills.Enabled || c.Skills.Target != "/skills" {
 			t.Errorf("skills = %+v, want enabled /skills", c.Skills)
@@ -42,8 +45,8 @@ func TestApply_SecureLocalStrict(t *testing.T) {
 	if c.GitPolicy != types.GitPolicyCommitOnly {
 		t.Errorf("gitPolicy = %q, want commitOnly", c.GitPolicy)
 	}
-	if c.WorkspaceSecretsPolicy == nil || !c.WorkspaceSecretsPolicy.Enabled || c.WorkspaceSecretsPolicy.Mode != types.SecretsModeFail {
-		t.Errorf("workspaceSecretsPolicy = %+v, want enabled fail", c.WorkspaceSecretsPolicy)
+	if c.WorkspaceSecretsPolicy == nil || !c.WorkspaceSecretsPolicy.Enabled || c.WorkspaceSecretsPolicy.Mode != types.SecretsModeHide {
+		t.Errorf("workspaceSecretsPolicy = %+v, want enabled hide", c.WorkspaceSecretsPolicy)
 	}
 	// Enforced egress firewall with a non-empty allowlist.
 	if c.Network == nil {

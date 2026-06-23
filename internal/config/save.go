@@ -26,6 +26,37 @@ func FindDevcontainerPath(workspaceFolder string) string {
 	return paths[0] // default location
 }
 
+// ToRawMap renders a typed value into a generic map[string]any via a JSON
+// round-trip. It is the single place that converts typed config structs into
+// the untyped devcontainer tree (dropping zero-valued omitempty fields), so
+// init, config set, and the service command all splice structs in the same way.
+func ToRawMap(v any) (map[string]any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ApplyDevcCustomization writes the typed customization into the config's
+// customizations.devc block and saves it to path. Shared by `config set` and
+// the `service` command so the write-back path lives in one place.
+func ApplyDevcCustomization(path string, devCfg *types.DevContainerConfig, custom *types.DevcCustomization) error {
+	if devCfg.Customizations == nil {
+		devCfg.Customizations = make(map[string]any)
+	}
+	customMap, err := ToRawMap(custom)
+	if err != nil {
+		return fmt.Errorf("converting customization: %w", err)
+	}
+	devCfg.Customizations["devc"] = customMap
+	return SaveDevcontainerConfig(path, devCfg)
+}
+
 // SaveDevcontainerConfig writes a DevContainerConfig to disk as JSON.
 func SaveDevcontainerConfig(path string, cfg *types.DevContainerConfig) error {
 	// Read existing raw JSON to preserve fields we don't model

@@ -144,8 +144,11 @@ func TestMergeCustomization_PresetExpansion(t *testing.T) {
 	if merged.GitPolicy != types.GitPolicyCommitOnly {
 		t.Errorf("expected preset gitPolicy commitOnly, got %q", merged.GitPolicy)
 	}
-	if merged.WorkspaceSecretsPolicy == nil || merged.WorkspaceSecretsPolicy.Mode != types.SecretsModeFail {
-		t.Error("expected preset workspaceSecretsPolicy fail")
+	if merged.WorkspaceSecretsPolicy == nil || merged.WorkspaceSecretsPolicy.Mode != types.SecretsModeHide {
+		t.Error("expected preset workspaceSecretsPolicy hide")
+	}
+	if merged.AgentPermissionMode != types.AgentPermissionBypass {
+		t.Errorf("expected preset agentPermissionMode bypassPermissions, got %q", merged.AgentPermissionMode)
 	}
 }
 

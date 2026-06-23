@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-venv python3-pip pipx \
     git git-lfs curl wget jq tree unzip zip shellcheck \
     openssl ca-certificates postgresql-client redis-tools sqlite3 \
+    iptables dnsutils \
     && git lfs install --system \
     && rm -rf /var/lib/apt/lists/*
 

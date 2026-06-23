@@ -22,7 +22,7 @@ devc up
 
 `devc init --list-presets` lists available presets.
 
-This produces a `customizations.devc` block equivalent to:
+This expands (via the `preset` field) to roughly:
 
 ```json
 {
@@ -33,26 +33,7 @@ This produces a `customizations.devc` block equivalent to:
       "securityProfile": "moderate",
       "credentialPolicy": "agentOnly",
       "gitPolicy": "commitOnly",
-      "workspaceSecretsPolicy": {
-        "enabled": true,
-        "mode": "fail",
-        "patterns": [
-          ".env",
-          ".env.*",
-          "*.env",
-          "config.yaml",
-          "secrets.yaml",
-          "credentials.json",
-          "service-account*.json",
-          ".npmrc"
-        ],
-        "allowPatterns": [
-          ".env.example",
-          ".env.sample",
-          "*.example.yaml",
-          "*.sample.yaml"
-        ]
-      },
+      "workspaceSecretsPolicy": { "enabled": true, "mode": "fail" },
       "skills": {
         "enabled": true,
         "source": "~/.agent/skills",
@@ -64,6 +45,11 @@ This produces a `customizations.devc` block equivalent to:
   }
 }
 ```
+
+When `patterns`/`allowPatterns` are omitted, the built-in default lists are used
+(see [`workspaceSecretsPolicy`](#workspacesecretspolicy)). `devc init --preset`
+additionally writes an explicit starter `patterns`/`allowPatterns` set (and
+example `services`) into your `devcontainer.json` that you can edit.
 
 The `preset` field expands these defaults at runtime (`global defaults < preset
 < project`), so you can override any individual field explicitly while keeping
@@ -479,8 +465,13 @@ If you enable `network.enforce`, make sure your image includes `iptables` (and
 
 - `readonly` and `mask` secrets only cover files present at container creation
   time; files created later are not protected.
-- Service containers are not started when the security profile disables
-  networking (`strict`); they need a bridge network.
+- Service containers need a bridge-style network. They are skipped (with a
+  warning) under `strict` (`none`) and `permissive` (`host`) network modes,
+  since the agent can't resolve their DNS aliases there — reach services via
+  their published `127.0.0.1` ports instead.
+- Services are re-ensured on each `devc up`, but a service removed while the
+  agent is gone entirely (no `devc down`) can be left as an orphan that the
+  restart policy keeps alive; remove it with `docker rm`/`docker volume rm`.
 - Egress filtering (`network.enforce`) is experimental, opt-in, fail-open when
   `iptables` is missing, and resolves domains to IPs at setup time. Without it,
   outbound network access is open.

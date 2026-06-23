@@ -14,6 +14,7 @@ yourself and point `devcontainer.json` at the resulting tag.
 - **Python**: python3, python3-dev, python3-venv, pipx, uv, poetry, ruff, black, mypy
 - **Common**: git, git-lfs, curl, wget, jq, yq, ripgrep, fd, tree, unzip, zip,
   shellcheck, shfmt, openssl, ca-certificates, postgresql-client, redis-tools, sqlite3
+- **Network egress** (`network.enforce`): iptables, dnsutils
 
 It is based on `mcr.microsoft.com/devcontainers/base:ubuntu`, so it keeps the
 non-root `vscode` user (uid/gid `1000`) that devc expects.

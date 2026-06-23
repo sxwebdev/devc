@@ -144,9 +144,13 @@ func (m *Manager) Up(opts UpOptions) error {
 
 	switch state {
 	case docker.StateRunning:
+		// Re-ensure sibling services in case one was removed out-of-band.
+		m.ensureServicesForExisting(containerName, merged)
 		fmt.Printf("Container %s is already running\n", containerName)
 
 	case docker.StateStopped, docker.StateCreated:
+		// The shared network must exist before starting an agent attached to it.
+		m.ensureServicesForExisting(containerName, merged)
 		fmt.Printf("Starting existing container %s...\n", containerName)
 		if err := m.Docker.Start(containerName); err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -224,8 +228,10 @@ func (m *Manager) createContainer(
 	networkName := ""
 	var svcEnv []string
 	if servicesEnabled(custom) {
-		if secProfile.Network.Mode == "none" {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: services are enabled but security profile disables networking; services will be unreachable\n")
+		if !servicesNetworkOK(custom) {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warning: services are enabled but network mode %q has no private network for DNS aliases; services skipped (use a bridge/restricted profile, or reach services via published 127.0.0.1 ports)\n",
+				effectiveNetworkMode(custom))
 		} else {
 			networkName = serviceNetworkName(containerName)
 			if err := m.setupServices(containerName, networkName, custom); err != nil {
@@ -304,8 +310,9 @@ func (m *Manager) createContainer(
 	}
 
 	// Apply egress firewall last, after installs/lifecycle have run, so setup
-	// traffic isn't blocked but the agent's own traffic is restricted.
-	if custom.Network != nil && custom.Network.Enforce && secProfile.Network.Mode != "none" && secProfile.Network.Mode != "host" {
+	// traffic isn't blocked but the agent's own traffic is restricted. Use the
+	// same effective-mode resolution as the docker layer that grants the caps.
+	if custom.Network != nil && custom.Network.Enforce && servicesNetworkOK(custom) {
 		m.applyEgressFirewall(containerName, agentProfiles, custom)
 	}
 

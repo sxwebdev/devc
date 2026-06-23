@@ -152,6 +152,27 @@ func TestContainerPortFor_Defaults(t *testing.T) {
 	}
 }
 
+func TestServicesNetworkOK(t *testing.T) {
+	cases := []struct {
+		mode string
+		ok   bool
+	}{
+		{"restricted", true},
+		{"", true}, // moderate default profile resolves to restricted
+		{"none", false},
+		{"host", false},
+	}
+	for _, c := range cases {
+		custom := &types.DevcCustomization{SecurityProfile: "moderate"}
+		if c.mode != "" {
+			custom.Network = &types.NetworkConfig{Mode: c.mode}
+		}
+		if got := servicesNetworkOK(custom); got != c.ok {
+			t.Errorf("servicesNetworkOK(mode=%q) = %v, want %v", c.mode, got, c.ok)
+		}
+	}
+}
+
 func TestServiceNetworkName(t *testing.T) {
 	if got := serviceNetworkName("devc-app-abcd1234"); got != "devc-net-devc-app-abcd1234" {
 		t.Errorf("unexpected network name %q", got)

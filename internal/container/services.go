@@ -7,12 +7,32 @@ import (
 	"sort"
 
 	"github.com/sxwebdev/devc/internal/docker"
+	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/pkg/types"
 )
 
 // serviceKeyRe matches service keys that are safe to use as a DNS alias,
 // container-name suffix, and connection-string host: a lowercase DNS label.
 var serviceKeyRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// effectiveNetworkMode resolves the container's network mode the same way the
+// docker layer does: the security profile's mode, overridden by an explicit
+// customizations.devc.network.mode.
+func effectiveNetworkMode(custom *types.DevcCustomization) string {
+	mode := security.GetProfile(custom.SecurityProfile).Network.Mode
+	if custom.Network != nil && custom.Network.Mode != "" {
+		mode = custom.Network.Mode
+	}
+	return mode
+}
+
+// servicesNetworkOK reports whether the effective network mode provides a
+// private network where sibling services resolve by DNS alias. "host" and
+// "none" do not, so services cannot be reached via their aliases there.
+func servicesNetworkOK(custom *types.DevcCustomization) bool {
+	m := effectiveNetworkMode(custom)
+	return m != "none" && m != "host"
+}
 
 // servicesEnabled reports whether any service is enabled.
 func servicesEnabled(custom *types.DevcCustomization) bool {
@@ -155,6 +175,20 @@ func (m *Manager) setupServices(containerName, networkName string, custom *types
 		}
 	}
 	return nil
+}
+
+// ensureServicesForExisting re-creates the shared network and any missing
+// sibling services for an already-existing agent container (idempotent). This
+// recovers connectivity when a service or the network was removed out-of-band
+// between `devc up` calls. The agent's env was baked at create time, so this
+// only restores the resources its connection strings already point at.
+func (m *Manager) ensureServicesForExisting(containerName string, custom *types.DevcCustomization) {
+	if !servicesEnabled(custom) || !servicesNetworkOK(custom) {
+		return
+	}
+	if err := m.setupServices(containerName, serviceNetworkName(containerName), custom); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not ensure services: %v\n", err)
+	}
 }
 
 // cleanupServices removes service containers and the network for a parent

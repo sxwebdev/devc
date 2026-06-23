@@ -43,6 +43,46 @@ func TestConfigHash_ImageChange(t *testing.T) {
 	}
 }
 
+func TestConfigHash_LegacyUnchanged(t *testing.T) {
+	// A config that sets none of the new secure fields must hash identically to
+	// before so existing containers are not force-rebuilt on upgrade.
+	devCfg := &types.DevContainerConfig{Image: "ubuntu:22.04"}
+	custom := &types.DevcCustomization{Agent: "claude", SecurityProfile: "moderate"}
+
+	withEmpty := *custom
+	withEmpty.WorkspaceSecretsPolicy = nil
+	withEmpty.Skills = nil
+	withEmpty.Services = nil
+
+	if ConfigHash(devCfg, custom) != ConfigHash(devCfg, &withEmpty) {
+		t.Error("empty new fields must not change the hash")
+	}
+}
+
+func TestConfigHash_SecretsModeChange(t *testing.T) {
+	devCfg := &types.DevContainerConfig{Image: "ubuntu:22.04"}
+	base := &types.DevcCustomization{
+		SecurityProfile:        "moderate",
+		WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: "readonly"},
+	}
+	masked := &types.DevcCustomization{
+		SecurityProfile:        "moderate",
+		WorkspaceSecretsPolicy: &types.WorkspaceSecretsPolicy{Enabled: true, Mode: "mask"},
+	}
+	if ConfigHash(devCfg, base) == ConfigHash(devCfg, masked) {
+		t.Error("changing workspaceSecretsPolicy.mode must change the hash")
+	}
+}
+
+func TestConfigHash_NetworkEnforceChange(t *testing.T) {
+	devCfg := &types.DevContainerConfig{Image: "ubuntu:22.04"}
+	off := &types.DevcCustomization{Network: &types.NetworkConfig{Mode: "restricted"}}
+	on := &types.DevcCustomization{Network: &types.NetworkConfig{Mode: "restricted", Enforce: true}}
+	if ConfigHash(devCfg, off) == ConfigHash(devCfg, on) {
+		t.Error("toggling network.enforce must change the hash")
+	}
+}
+
 func TestConfigHash_FeatureChange(t *testing.T) {
 	custom := &types.DevcCustomization{SecurityProfile: "moderate"}
 

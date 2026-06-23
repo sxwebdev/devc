@@ -20,11 +20,41 @@ type configSnapshot struct {
 	PostCreateCommand any               `json:"postCreateCommand,omitempty"`
 	OnCreateCommand   any               `json:"onCreateCommand,omitempty"`
 	ContainerEnv      map[string]string `json:"containerEnv,omitempty"`
+	ForwardPorts      []any             `json:"forwardPorts,omitempty"`
 	EnvPassthrough    []string          `json:"envPassthrough,omitempty"`
 	ResourcesCPUs     string            `json:"cpus,omitempty"`
 	ResourcesMemory   string            `json:"memory,omitempty"`
 	NetworkMode       string            `json:"networkMode,omitempty"`
+	NetworkEnforce    bool              `json:"networkEnforce,omitempty"`
+	NetworkAllowlist  []string          `json:"networkAllowlist,omitempty"`
 	AgentMounts       []mountSnapshot   `json:"agentMounts,omitempty"`
+	CredentialPolicy  string            `json:"credentialPolicy,omitempty"`
+	GitPolicy         string            `json:"gitPolicy,omitempty"`
+	Secrets           *secretsSnapshot  `json:"secrets,omitempty"`
+	Skills            *skillsSnapshot   `json:"skills,omitempty"`
+	Services          []serviceSnapshot `json:"services,omitempty"`
+}
+
+type secretsSnapshot struct {
+	Enabled       bool     `json:"enabled"`
+	Mode          string   `json:"mode,omitempty"`
+	Patterns      []string `json:"patterns,omitempty"`
+	AllowPatterns []string `json:"allowPatterns,omitempty"`
+}
+
+type serviceSnapshot struct {
+	Name          string            `json:"name"`
+	Image         string            `json:"image,omitempty"`
+	ContainerPort int               `json:"containerPort,omitempty"`
+	HostPort      int               `json:"hostPort,omitempty"`
+	AgentEnv      map[string]string `json:"agentEnv,omitempty"`
+}
+
+type skillsSnapshot struct {
+	Enabled  bool   `json:"enabled"`
+	Source   string `json:"source,omitempty"`
+	Target   string `json:"target,omitempty"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type mountSnapshot struct {
@@ -44,6 +74,43 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 		PostCreateCommand: devCfg.PostCreateCommand,
 		OnCreateCommand:   devCfg.OnCreateCommand,
 		ContainerEnv:      devCfg.ContainerEnv,
+		CredentialPolicy:  custom.CredentialPolicy,
+		GitPolicy:         custom.GitPolicy,
+		ForwardPorts:      devCfg.ForwardPorts,
+	}
+
+	if len(custom.Services) > 0 {
+		names := make([]string, 0, len(custom.Services))
+		for name := range custom.Services {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			svc := custom.Services[name]
+			if svc == nil || !svc.Enabled {
+				continue
+			}
+			snap.Services = append(snap.Services, serviceSnapshot{
+				Name:          name,
+				Image:         svc.Image,
+				ContainerPort: svc.ContainerPort,
+				HostPort:      svc.HostPort,
+				AgentEnv:      svc.AgentEnv,
+			})
+		}
+	}
+
+	if custom.Skills != nil && custom.Skills.Enabled {
+		ro := true
+		if custom.Skills.ReadOnly != nil {
+			ro = *custom.Skills.ReadOnly
+		}
+		snap.Skills = &skillsSnapshot{
+			Enabled:  true,
+			Source:   custom.Skills.Source,
+			Target:   custom.Skills.Target,
+			ReadOnly: ro,
+		}
 	}
 
 	if custom.EnvPassthrough != nil {
@@ -58,6 +125,17 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 	}
 	if custom.Network != nil {
 		snap.NetworkMode = custom.Network.Mode
+		snap.NetworkEnforce = custom.Network.Enforce
+		snap.NetworkAllowlist = custom.Network.Allowlist
+	}
+
+	if custom.WorkspaceSecretsPolicy != nil && custom.WorkspaceSecretsPolicy.Enabled {
+		snap.Secrets = &secretsSnapshot{
+			Enabled:       true,
+			Mode:          custom.WorkspaceSecretsPolicy.Mode,
+			Patterns:      custom.WorkspaceSecretsPolicy.Patterns,
+			AllowPatterns: custom.WorkspaceSecretsPolicy.AllowPatterns,
+		}
 	}
 
 	// Include agent mount specs so changes to mount modes trigger rebuild

@@ -11,8 +11,13 @@ while providing a consistent development experience for both local and remote wo
   extensions via `customizations.devc`
 - **Security profiles** — three presets (strict, moderate, permissive) controlling network access, capabilities, and
   resource limits
-- **AI agent integration** — built-in profiles for Claude Code, Codex, Gemini CLI, and Opencode with config mounting and
-  network allowlists
+- **AI agent integration** — built-in profiles for Claude Code, Codex, GitHub Copilot CLI, Gemini CLI, Aider,
+  Opencode, and Hermes Agent with config mounting and network allowlists
+- **Secure local agent preset** — withhold host credentials (`credentialPolicy`), block or mask in-repo secrets
+  (`workspaceSecretsPolicy`), disable `git push` (`gitPolicy`), read-only skills mount, opt-in egress firewall
+- **Service containers** — sibling Postgres/Redis (and more) on a per-project network: reach them by DNS inside the
+  container and on `127.0.0.1` ports from the host, with no Docker socket in the agent
+- **Port forwarding** — publish container app ports (`forwardPorts`) to `127.0.0.1` for host access
 - **Session tracking** — per-container session counting prevents accidental stops while sessions are active
 - **Persistent containers** — containers survive between sessions, resuming where you left off
 
@@ -49,7 +54,7 @@ make build
 ### Prerequisites
 
 - A container runtime (see [Supported runtimes](#supported-container-runtimes) below)
-- Go 1.22+ (for building from source)
+- Go 1.26+ (for building from source)
 
 ## Quick start
 
@@ -79,7 +84,7 @@ devc stop
 | `devc attach [path]` | Attach an interactive session                        |
 | `devc stop [path]`   | Stop a container (respects active sessions)          |
 | `devc down [path]`   | Stop and remove a container                          |
-| `devc build [path]`  | Build or rebuild the container image                 |
+| `devc up --rebuild`  | Recreate the container (e.g. after config changes)   |
 | `devc list`          | List all managed containers                          |
 | `devc config [path]` | Display merged configuration                         |
 | `devc clean`         | Remove all stopped containers                        |
@@ -87,7 +92,7 @@ devc stop
 
 ### Global flags
 
-```
+```text
 --log-level         Log level: debug, info, warn, error (default: info)
 --output-format     Output format: text, json (default: text)
 ```
@@ -133,12 +138,30 @@ User-level defaults that apply to all projects unless overridden at the project 
 
 ### Security profiles
 
-| Control      | Strict      | Moderate (default) | Permissive      |
-| ------------ | ----------- | ------------------ | --------------- |
-| Network      | None        | Domain allowlist   | Host network    |
-| Capabilities | Drop ALL    | Drop ALL + minimal | Docker defaults |
-| Resources    | 2 CPU, 4 GB | 4 CPU, 8 GB        | Unlimited       |
-| User         | Non-root    | Non-root           | Non-root        |
+| Control      | Strict      | Moderate (default)  | Permissive      |
+| ------------ | ----------- | ------------------- | --------------- |
+| Network      | None        | Bridge (allowlist¹) | Host network    |
+| Capabilities | Drop ALL    | Drop ALL + minimal  | Docker defaults |
+| Resources    | 2 CPU, 4 GB | 4 CPU, 8 GB         | Unlimited       |
+| User         | Non-root    | Non-root            | Non-root        |
+
+¹ The network allowlist is advisory by default; set `network.enforce` to apply it
+as a real egress firewall (see the [secure workflow](docs/secure-local-agent.md)).
+
+### Secure local agent workflow
+
+An opt-in workflow that lets an agent edit code and commit without host
+credentials, blocks in-repo secrets from reaching the agent, and disables
+`git push`:
+
+```bash
+devc init --preset secure-local-agent --agent claude
+```
+
+See [docs/secure-local-agent.md](docs/secure-local-agent.md) for the threat
+model, the `credentialPolicy` / `workspaceSecretsPolicy` / `gitPolicy` settings,
+the read-only skills mount, service containers (Postgres/Redis), `forwardPorts`,
+and opt-in egress filtering.
 
 ## Supported container runtimes
 

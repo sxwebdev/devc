@@ -13,11 +13,13 @@ import (
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
 	"golang.org/x/term"
 
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
+	"github.com/sxwebdev/devc/internal/credpolicy"
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/pkg/types"
 )
@@ -131,6 +133,8 @@ func (c *Client) CreateAndStart(
 	workspaceFolder string,
 	agentProfiles []*agent.Profile,
 	configHash string,
+	networkName string,
+	extraEnv []string,
 ) error {
 	ctx := context.Background()
 
@@ -159,40 +163,22 @@ func (c *Client) CreateAndStart(
 		env = append(env, k+"="+v)
 	}
 
-	// Forward host env vars for auth (API keys, tokens)
-	// Collect from all agent profiles and devc customization, deduplicating
-	passthroughSet := make(map[string]bool)
+	// Determine which host credentials this policy permits. Empty policy maps
+	// to legacy (current behavior) for backwards compatibility.
+	cred := credpolicy.Decide(custom.CredentialPolicy)
+
+	// Static (non-secret) agent env vars are always applied.
 	for _, p := range agentProfiles {
-		for _, envName := range p.EnvPassthrough {
-			passthroughSet[envName] = true
-		}
 		for k, v := range p.EnvVars {
 			env = append(env, k+"="+v)
 		}
 	}
-	if custom.EnvPassthrough != nil {
-		for _, envName := range custom.EnvPassthrough {
-			passthroughSet[envName] = true
-		}
-	}
-	for envName := range passthroughSet {
-		if val, ok := os.LookupEnv(envName); ok {
-			env = append(env, envName+"="+val)
-		}
-	}
 
-	// Resolve agent credentials from host (Keychain, credential files, etc.)
-	credSet := make(map[string]bool) // deduplicate credential env vars
-	for _, p := range agentProfiles {
-		creds := agent.ResolveCredentials(p)
-		for _, e := range creds.Env {
-			key := strings.SplitN(e, "=", 2)[0]
-			if !credSet[key] {
-				credSet[key] = true
-				env = append(env, e)
-			}
-		}
-	}
+	// Credential and passthrough env, gated by the policy. See buildCredentialEnv.
+	env = append(env, buildCredentialEnv(cred, agentProfiles, custom.EnvPassthrough, os.LookupEnv, agent.ResolveCredentials)...)
+
+	// Service-derived env (e.g. DATABASE_URL, REDIS_URL) injected by the caller.
+	env = append(env, extraEnv...)
 
 	labels := map[string]string{
 		"devc.managed":     "true",
@@ -240,58 +226,36 @@ func (c *Client) CreateAndStart(
 	home, _ := os.UserHomeDir()
 	containerHome := ContainerHomeDir(ctx, c.api, devCfg.Image, effectiveUser)
 
-	// Only bind-mount agent config entries that are NOT marked Copy.
-	// Copy entries are handled after container start via docker cp.
-	mountedTargets := make(map[string]bool) // deduplicate across profiles
-	if home != "" {
-		for _, p := range agentProfiles {
-			for _, m := range p.ConfigMounts {
-				if m.Copy {
-					continue // will be copied into container after start
-				}
-				src := home + "/" + m.HostPath
-				if _, statErr := os.Stat(src); statErr != nil {
-					continue
-				}
-				dst := m.ContainerPath
-				if dst == "" {
-					dst = containerHome + "/" + m.HostPath
-				}
-				if mountedTargets[dst] {
-					continue
-				}
-				mountedTargets[dst] = true
-				mounts = append(mounts, mount.Mount{
-					Type:     mount.TypeBind,
-					Source:   src,
-					Target:   dst,
-					ReadOnly: m.ReadOnly,
-				})
-			}
-		}
+	// Host-credential bind mounts (agent config + SSH keys/git config), gated by
+	// the credential policy. See buildCredentialMounts.
+	mounts = append(mounts, buildCredentialMounts(cred, agentProfiles, home, containerHome, agent.CommonAuthMounts(), fileExists)...)
+
+	// Read-only skills mount.
+	if skillsMount, skillsEnv, skillsErr := resolveSkillsMount(custom.Skills, home); skillsErr != nil {
+		return skillsErr
+	} else if skillsMount != nil {
+		mounts = append(mounts, *skillsMount)
+		env = append(env, skillsEnv)
 	}
 
-	// Common auth mounts (SSH keys, git config) — always read-only
-	if home != "" {
-		for _, m := range agent.CommonAuthMounts() {
-			src := home + "/" + m.HostPath
-			if _, statErr := os.Stat(src); statErr != nil {
-				continue
-			}
-			dst := containerHome + "/" + m.HostPath
-			mounts = append(mounts, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   src,
-				Target:   dst,
-				ReadOnly: true,
-			})
-		}
+	// In-workspace secret handling. "readonly" pins each protected file
+	// read-only; "mask" shadows it with an empty file so the agent cannot read
+	// its contents. The workspace itself stays writable in both cases.
+	if roMounts, roErr := readonlySecretMounts(custom, workspaceFolder, wsTarget); roErr != nil {
+		return roErr
+	} else {
+		mounts = append(mounts, roMounts...)
+	}
+	if maskMounts, maskErr := maskSecretMounts(custom, workspaceFolder, wsTarget); maskErr != nil {
+		return maskErr
+	} else {
+		mounts = append(mounts, maskMounts...)
 	}
 
 	// SSH agent socket forwarding.
 	// On macOS, Docker Desktop provides the socket automatically; we only set the env var.
 	// On Linux, we bind-mount the host socket into the container.
-	if hostSock, containerSock := agent.SSHAuthSockMount(); containerSock != "" {
+	if hostSock, containerSock := agent.SSHAuthSockMount(); cred.AllowSSHAgent && containerSock != "" {
 		if hostSock != "" {
 			if _, statErr := os.Stat(hostSock); statErr == nil {
 				mounts = append(mounts, mount.Mount{
@@ -305,6 +269,12 @@ func (c *Client) CreateAndStart(
 		env = append(env, "SSH_AUTH_SOCK="+containerSock)
 	}
 
+	// Finalize the container env: the skills and SSH_AUTH_SOCK entries above are
+	// appended after the containerCfg literal captured `env`, so re-point Env at
+	// the final slice. Without this, late appends silently never reach the
+	// container.
+	containerCfg.Env = env
+
 	hostCfg := &container.HostConfig{
 		Mounts:      mounts,
 		SecurityOpt: []string{"no-new-privileges"},
@@ -314,6 +284,13 @@ func (c *Client) CreateAndStart(
 	if profile.DropAllCaps {
 		hostCfg.CapDrop = []string{"ALL"}
 		hostCfg.CapAdd = profile.AddCaps
+	}
+
+	// Egress enforcement needs NET_ADMIN/NET_RAW to configure iptables inside
+	// the container's network namespace. The agent runs as a non-root user, so
+	// it cannot flush the rules the root init script installs.
+	if custom.Network != nil && custom.Network.Enforce && netModeAllowsEgressFilter(custom, profile) {
+		hostCfg.CapAdd = appendUnique(hostCfg.CapAdd, "NET_ADMIN", "NET_RAW")
 	}
 
 	// Resources
@@ -348,20 +325,52 @@ func (c *Client) CreateAndStart(
 	if custom.Network != nil && custom.Network.Mode != "" {
 		netMode = custom.Network.Mode
 	}
+	var netCfg *network.NetworkingConfig
 	switch netMode {
 	case "none":
 		hostCfg.NetworkMode = "none"
 	case "host":
 		hostCfg.NetworkMode = "host"
 	default:
-		hostCfg.NetworkMode = "bridge"
+		if networkName != "" {
+			// Join the per-project devc network so sibling services resolve by
+			// DNS alias (e.g. postgres:5432).
+			hostCfg.NetworkMode = container.NetworkMode(networkName)
+			netCfg = &network.NetworkingConfig{
+				EndpointsConfig: map[string]*network.EndpointSettings{
+					networkName: {},
+				},
+			}
+		} else {
+			hostCfg.NetworkMode = "bridge"
+		}
+	}
+
+	// Publish forwarded ports (frontend/backend dev servers) to the host. Host
+	// networking already exposes ports directly; "none" has no ports to publish.
+	if netMode != "none" && netMode != "host" {
+		bindings, exposed, portErr := parseForwardPorts(devCfg.ForwardPorts)
+		if portErr != nil {
+			return portErr
+		}
+		if len(bindings) > 0 {
+			hostCfg.PortBindings = bindings
+			if containerCfg.ExposedPorts == nil {
+				containerCfg.ExposedPorts = exposed
+			} else {
+				for p := range exposed {
+					containerCfg.ExposedPorts[p] = struct{}{}
+				}
+			}
+		}
 	}
 
 	// Create container
 	createResult, err := c.api.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
-		Config:     containerCfg,
-		HostConfig: hostCfg,
-		Name:       containerName,
+		Config:           containerCfg,
+		HostConfig:       hostCfg,
+		NetworkingConfig: netCfg,
+		Name:             containerName,
 	})
 	if err != nil {
 		return fmt.Errorf("creating container: %w", err)

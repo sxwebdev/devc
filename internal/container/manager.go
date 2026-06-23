@@ -17,6 +17,7 @@ import (
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/internal/session"
 	"github.com/sxwebdev/devc/pkg/types"
+	"golang.org/x/term"
 )
 
 // safeShellPathRe matches path components that are safe to interpolate into
@@ -29,6 +30,37 @@ var safeShellPathRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 type Manager struct {
 	Docker  *docker.Client
 	Session *session.Tracker
+
+	// warnings accumulates non-fatal setup warnings during an Up so they can be
+	// summarized at the end instead of scrolling past in the build output.
+	warnings []string
+}
+
+// warn records a non-fatal setup warning: it prints immediately to stderr (so
+// the message stays near the operation that produced it) and accumulates the
+// text so Up can show a summary at the end. The format must omit the "warning: "
+// prefix and trailing newline.
+func (m *Manager) warn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	m.warnings = append(m.warnings, msg)
+	_, _ = fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
+}
+
+// printWarningSummary echoes accumulated setup warnings as a single block so
+// they are not lost above a wall of image-build and lifecycle output.
+func (m *Manager) printWarningSummary() {
+	n := len(m.warnings)
+	if n == 0 {
+		return
+	}
+	noun := "warning"
+	if n != 1 {
+		noun += "s"
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "\n⚠ %d setup %s:\n", n, noun)
+	for _, w := range m.warnings {
+		_, _ = fmt.Fprintf(os.Stderr, "  - %s\n", w)
+	}
 }
 
 // NewManager creates a container manager.
@@ -58,10 +90,14 @@ type UpOptions struct {
 	SecurityProfile string
 	Detach          bool
 	Rebuild         bool // Force rebuild even if container exists
+	AssumeYes       bool // Answer the config-drift rebuild prompt with "yes" (non-interactive)
+	AssumeNo        bool // Answer the config-drift rebuild prompt with "no" (non-interactive)
 }
 
 // Up creates or starts a container for the workspace.
 func (m *Manager) Up(opts UpOptions) error {
+	m.warnings = nil
+
 	devCfg, err := config.LoadDevcontainerConfig(opts.WorkspaceFolder)
 	if err != nil {
 		return err
@@ -88,6 +124,14 @@ func (m *Manager) Up(opts UpOptions) error {
 
 	merged := config.MergeCustomization(globalCfg, custom)
 
+	// Validate enum fields up front so a typo produces an actionable message
+	// here instead of an opaque failure at container runtime. Agent names are
+	// intentionally NOT hard-validated: an unknown agent is skipped with a
+	// warning below, so a single stale/typo'd name doesn't block the container.
+	if err := config.ValidateEnums(merged); err != nil {
+		return err
+	}
+
 	// Enforce the workspace secrets policy before any container operation so a
 	// protected file blocks startup regardless of container state.
 	if err := enforceWorkspaceSecrets(opts.WorkspaceFolder, merged); err != nil {
@@ -101,7 +145,7 @@ func (m *Manager) Up(opts UpOptions) error {
 	for _, name := range merged.ResolvedAgents() {
 		p := agent.GetProfile(name)
 		if p == nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: unknown agent %q, skipping\n", name)
+			m.warn("unknown agent %q, skipping", name)
 			continue
 		}
 		agentProfiles = append(agentProfiles, p)
@@ -115,7 +159,7 @@ func (m *Manager) Up(opts UpOptions) error {
 	state := inspectResult.State
 
 	// Detect config drift on existing containers
-	if !opts.Rebuild && (state == docker.StateRunning || state == docker.StateStopped || state == docker.StateCreated) {
+	if !opts.Rebuild && (state == docker.StateRunning || state == docker.StateStopped || state == docker.StateCreated || state == docker.StatePaused) {
 		storedHash := inspectResult.Labels["devc.config-hash"]
 		if storedHash != "" && storedHash != currentHash {
 			changes := describeChanges(inspectResult.Labels, devCfg, merged, agentProfiles)
@@ -123,11 +167,22 @@ func (m *Manager) Up(opts UpOptions) error {
 			for _, change := range changes {
 				fmt.Printf("  - %s\n", change)
 			}
-			fmt.Printf("\nRebuild container? [y/N] ")
-			if askYesNo() {
+			switch {
+			case opts.AssumeYes:
+				fmt.Println("Rebuilding (--yes)")
 				opts.Rebuild = true
-			} else {
-				fmt.Println("Continuing with existing container")
+			case opts.AssumeNo:
+				fmt.Println("Continuing with existing container (--no)")
+			case !term.IsTerminal(int(os.Stdin.Fd())):
+				// No TTY (CI/piped): don't block on a prompt that can't be answered.
+				fmt.Println("Non-interactive input; continuing with existing container (pass --yes to rebuild)")
+			default:
+				fmt.Printf("\nRebuild container? [y/N] ")
+				if askYesNo() {
+					opts.Rebuild = true
+				} else {
+					fmt.Println("Continuing with existing container")
+				}
 			}
 		}
 	}
@@ -156,8 +211,16 @@ func (m *Manager) Up(opts UpOptions) error {
 			return fmt.Errorf("starting container: %w", err)
 		}
 
+	case docker.StatePaused:
+		fmt.Printf("Unpausing container %s...\n", containerName)
+		if err := m.Docker.Unpause(containerName); err != nil {
+			return fmt.Errorf("unpausing container: %w", err)
+		}
+
 	case docker.StateNotFound:
 		if err := m.createContainer(containerName, devCfg, merged, opts.WorkspaceFolder, agentProfiles, currentHash); err != nil {
+			// Surface any warnings collected before the failure.
+			m.printWarningSummary()
 			return err
 		}
 	}
@@ -165,6 +228,8 @@ func (m *Manager) Up(opts UpOptions) error {
 	// Track session
 	count, _ := m.Session.Attach(containerName)
 	fmt.Printf("Container %s ready (%s)\n", containerName, session.FormatCount(count))
+
+	m.printWarningSummary()
 
 	if !opts.Detach {
 		return m.Docker.Exec(containerName, []string{"/bin/bash"}, true)
@@ -214,8 +279,8 @@ func (m *Manager) createContainer(
 	if secProfile.Network.Mode == "none" {
 		for _, p := range agentProfiles {
 			if len(p.NetworkAllow) > 0 {
-				_, _ = fmt.Fprintf(os.Stderr,
-					"warning: security profile %q disables all networking, but agent %q requires internet access (%s)\n",
+				m.warn(
+					"security profile %q disables all networking, but agent %q requires internet access (%s)",
 					custom.SecurityProfile, p.Name,
 					strings.Join(p.NetworkAllow, ", "),
 				)
@@ -229,8 +294,8 @@ func (m *Manager) createContainer(
 	var svcEnv []string
 	if servicesEnabled(custom) {
 		if !servicesNetworkOK(custom) {
-			_, _ = fmt.Fprintf(os.Stderr,
-				"warning: services are enabled but network mode %q has no private network for DNS aliases; services skipped (use a bridge/restricted profile, or reach services via published 127.0.0.1 ports)\n",
+			m.warn(
+				"services are enabled but network mode %q has no private network for DNS aliases; services skipped (use a bridge/restricted profile, or reach services via published 127.0.0.1 ports)",
 				effectiveNetworkMode(custom))
 		} else {
 			networkName = serviceNetworkName(containerName)
@@ -265,7 +330,7 @@ func (m *Manager) createContainer(
 				return m.Docker.ExecAs(containerName, cmd, docker.ExecOptions{User: user})
 			})
 			if err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "warning: agent %s setup failed: %v\n", p.Name, err)
+				m.warn("agent %s setup failed: %v", p.Name, err)
 			}
 		}
 		// Special case for Claude config patching until we move it to a better place.
@@ -290,17 +355,17 @@ func (m *Manager) createContainer(
 	}
 	if devCfg.OnCreateCommand != nil {
 		if lcErr := m.runLifecycleCommand(containerName, devCfg.OnCreateCommand, "onCreateCommand"); lcErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: onCreateCommand failed: %v\n", lcErr)
+			m.warn("onCreateCommand failed: %v", lcErr)
 		}
 	}
 	if devCfg.PostCreateCommand != nil {
 		if lcErr := m.runLifecycleCommand(containerName, devCfg.PostCreateCommand, "postCreateCommand"); lcErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: postCreateCommand failed: %v\n", lcErr)
+			m.warn("postCreateCommand failed: %v", lcErr)
 		}
 	}
 	if devCfg.PostStartCommand != nil {
 		if lcErr := m.runLifecycleCommand(containerName, devCfg.PostStartCommand, "postStartCommand"); lcErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: postStartCommand failed: %v\n", lcErr)
+			m.warn("postStartCommand failed: %v", lcErr)
 		}
 	}
 
@@ -333,7 +398,7 @@ func (m *Manager) applyEgressFirewall(containerName string, agentProfiles []*age
 
 	fmt.Println("[devc] Applying egress firewall (network.enforce)")
 	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", script}, docker.ExecOptions{User: "root"}); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not apply egress firewall: %v\n", err)
+		m.warn("could not apply egress firewall: %v", err)
 	}
 }
 
@@ -343,7 +408,7 @@ func (m *Manager) Exec(workspaceFolder string, command []string) error {
 
 	state := m.Docker.Inspect(containerName).State
 	if state != docker.StateRunning {
-		return fmt.Errorf("container %s is not running (state: %s)", containerName, state)
+		return fmt.Errorf("container %s is not running (state: %s); run 'devc up' to start it", containerName, state)
 	}
 
 	return m.Docker.ExecAs(containerName, command, docker.ExecOptions{
@@ -351,13 +416,40 @@ func (m *Manager) Exec(workspaceFolder string, command []string) error {
 	})
 }
 
-// Attach attaches an interactive session to the container.
+// Attach attaches an interactive session to the container. A stopped container
+// is started automatically so `devc shell` / `devc attach` "just work" after a
+// `devc stop`; only a missing container is an error.
 func (m *Manager) Attach(workspaceFolder, shell string) error {
 	containerName := config.ContainerName(workspaceFolder)
 
-	state := m.Docker.Inspect(containerName).State
-	if state != docker.StateRunning {
-		return fmt.Errorf("container %s is not running", containerName)
+	switch state := m.Docker.Inspect(containerName).State; state {
+	case docker.StateRunning:
+		// Already running — attach directly.
+	case docker.StateStopped, docker.StateCreated:
+		// Best-effort: bring sibling services (and their network) back the same
+		// way `up` does. A config-load failure doesn't block starting the
+		// container, but warn since services/connection env may be degraded.
+		if _, merged, err := config.LoadMerged(workspaceFolder); err == nil {
+			m.ensureServicesForExisting(containerName, merged)
+		} else {
+			m.warn("could not load config to restore services: %v", err)
+		}
+		fmt.Printf("Starting existing container %s...\n", containerName)
+		if err := m.Docker.Start(containerName); err != nil {
+			return fmt.Errorf("starting container: %w", err)
+		}
+		// Start returns once the request is accepted; confirm the container
+		// actually stayed up before claiming a session and a shell.
+		if st := m.Docker.Inspect(containerName).State; st != docker.StateRunning {
+			return fmt.Errorf("container %s exited immediately after start (state: %s); see 'devc logs'", containerName, st)
+		}
+	case docker.StatePaused:
+		fmt.Printf("Unpausing container %s...\n", containerName)
+		if err := m.Docker.Unpause(containerName); err != nil {
+			return fmt.Errorf("unpausing container: %w", err)
+		}
+	default:
+		return fmt.Errorf("no container found for %s; run 'devc up' to create one", containerName)
 	}
 
 	count, _ := m.Session.Attach(containerName)
@@ -369,6 +461,84 @@ func (m *Manager) Attach(workspaceFolder, shell string) error {
 	fmt.Printf("Detached (%s)\n", session.FormatCount(remaining))
 
 	return err
+}
+
+// StatusInfo is a snapshot of a workspace's container for `devc status`.
+type StatusInfo struct {
+	Name            string   `json:"name"`
+	Workspace       string   `json:"workspace"`
+	State           string   `json:"state"`
+	Image           string   `json:"image"`
+	Agents          []string `json:"agents,omitempty"`
+	SecurityProfile string   `json:"securityProfile"`
+	NetworkMode     string   `json:"networkMode"`
+	AllowlistSize   int      `json:"allowlistSize"`
+	CPUs            string   `json:"cpus,omitempty"`
+	Memory          string   `json:"memory,omitempty"`
+	PidsLimit       int64    `json:"pidsLimit,omitempty"`
+	Sessions        int      `json:"sessions"`
+	ConfigDrift     bool     `json:"configDrift"`
+	Services        []string `json:"services,omitempty"`
+}
+
+// Status returns a snapshot of the container and effective config for a
+// workspace, including whether the live container has drifted from the config.
+// If devcontainer.json is missing/unparseable it still reports a live
+// container's basic state, so `devc status` is useful even when config is gone.
+func (m *Manager) Status(workspaceFolder string) (*StatusInfo, error) {
+	containerName := config.ContainerName(workspaceFolder)
+	inspect := m.Docker.Inspect(containerName)
+
+	devCfg, merged, err := config.LoadMerged(workspaceFolder)
+	if err != nil {
+		if inspect.State == docker.StateNotFound {
+			// No container and no config — nothing to report.
+			return nil, err
+		}
+		// Container exists but config is unreadable: report what we can.
+		return &StatusInfo{
+			Name:      containerName,
+			Workspace: workspaceFolder,
+			State:     string(inspect.State),
+			Sessions:  m.Session.Count(containerName),
+		}, nil
+	}
+
+	info := &StatusInfo{
+		Name:            containerName,
+		Workspace:       workspaceFolder,
+		State:           string(inspect.State),
+		Image:           devCfg.Image,
+		Agents:          merged.ResolvedAgents(),
+		SecurityProfile: merged.SecurityProfile,
+		Sessions:        m.Session.Count(containerName),
+		Services:        merged.EnabledServiceNames(),
+	}
+	if merged.Network != nil {
+		info.NetworkMode = merged.Network.Mode
+		info.AllowlistSize = len(merged.Network.Allowlist)
+	}
+	if merged.Resources != nil {
+		info.CPUs = merged.Resources.CPUs
+		info.Memory = merged.Resources.Memory
+		info.PidsLimit = merged.Resources.PidsLimit
+	}
+
+	if inspect.State != docker.StateNotFound {
+		stored := inspect.Labels["devc.config-hash"]
+		info.ConfigDrift = stored != "" && stored != config.ConfigHash(devCfg, merged)
+	}
+
+	return info, nil
+}
+
+// Logs streams the container's logs to stdout for the workspace.
+func (m *Manager) Logs(workspaceFolder string, follow bool) error {
+	containerName := config.ContainerName(workspaceFolder)
+	if m.Docker.Inspect(containerName).State == docker.StateNotFound {
+		return fmt.Errorf("no container found for %s; run 'devc up' to create one", containerName)
+	}
+	return m.Docker.Logs(containerName, follow, os.Stdout)
 }
 
 // Stop stops the container, respecting session count.
@@ -486,7 +656,7 @@ func (m *Manager) linkAgentBinary(containerName string, profile *agent.Profile, 
 		profile.Binary, profile.Binary, profile.Binary,
 	)
 	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", cmd}, docker.ExecOptions{User: "root"}); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link %s to PATH: %v\n", profile.Binary, err)
+		m.warn("could not link %s to PATH: %v", profile.Binary, err)
 	}
 }
 
@@ -539,7 +709,7 @@ chmod 0755 /usr/local/bin/git`
 // installGitWrapper installs the commitOnly git wrapper as root.
 func (m *Manager) installGitWrapper(containerName string) {
 	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", gitWrapperScript}, docker.ExecOptions{User: "root"}); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not install git wrapper (gitPolicy=commitOnly): %v\n", err)
+		m.warn("could not install git wrapper (gitPolicy=commitOnly): %v", err)
 	}
 }
 
@@ -610,7 +780,7 @@ func (m *Manager) copyAgentConfig(containerName string, profile *agent.Profile, 
 		_ = m.Docker.ExecAs(containerName, []string{"sh", "-c", mkdirCmd}, docker.ExecOptions{User: "root"})
 
 		if err := m.Docker.CopyInto(containerName, src, dst); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: could not copy %s into container: %v\n", mt.HostPath, err)
+			m.warn("could not copy %s into container: %v", mt.HostPath, err)
 			continue
 		}
 
@@ -654,7 +824,7 @@ func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, container
 	// replaces path separators with dashes but does not otherwise sanitize the input,
 	// so workspace paths with spaces or shell metacharacters could allow injection.
 	if !safeShellPathRe.MatchString(containerKey) {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: skipping Claude session directory setup: workspace path %q produces unsafe key %q\n", containerWorkspace, containerKey)
+		m.warn("skipping Claude session directory setup: workspace path %q produces unsafe key %q", containerWorkspace, containerKey)
 	} else {
 		cmd := fmt.Sprintf(
 			`home=$(eval echo ~) && `+
@@ -662,7 +832,7 @@ func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, container
 			containerKey,
 		)
 		if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", cmd}, docker.ExecOptions{}); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: could not set up Claude session directory: %v\n", err)
+			m.warn("could not set up Claude session directory: %v", err)
 		}
 	}
 
@@ -677,25 +847,25 @@ func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, container
 	}
 	modified, err := patchClaudeGlobalConfig(hostConfigPath, containerWorkspace)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not generate Claude global config: %v\n", err)
+		m.warn("could not generate Claude global config: %v", err)
 		return
 	}
 
 	// Write to a temp file named .claude.json, then docker cp it into the container.
 	tmpDir, err := os.MkdirTemp("", "devc-claude-")
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not create temp dir for Claude config: %v\n", err)
+		m.warn("could not create temp dir for Claude config: %v", err)
 		return
 	}
 	defer os.RemoveAll(tmpDir)
 
 	tmpFile := filepath.Join(tmpDir, ".claude.json")
 	if err := os.WriteFile(tmpFile, modified, 0o644); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not write temp Claude config: %v\n", err)
+		m.warn("could not write temp Claude config: %v", err)
 		return
 	}
 	if err := m.Docker.CopyInto(containerName, tmpFile, containerHome); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not copy Claude config into container: %v\n", err)
+		m.warn("could not copy Claude config into container: %v", err)
 		return
 	}
 

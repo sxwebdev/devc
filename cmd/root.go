@@ -6,10 +6,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	flagLogLevel     string
-	flagOutputFormat string
-)
+// flagOutputFormat is bound by addOutputFormatFlag on the commands that produce
+// machine-readable output (list, status, and config/config show).
+var flagOutputFormat string
+
+// addOutputFormatFlag registers the shared --output-format flag on a command.
+func addOutputFormatFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flagOutputFormat, "output-format", "text", "output format (text, json)")
+}
 
 func NewRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
@@ -20,9 +24,6 @@ func NewRootCmd(version string) *cobra.Command {
 		SilenceUsage: true,
 	}
 
-	root.PersistentFlags().StringVar(&flagLogLevel, "log-level", "info", "log level (debug, info, warn, error)")
-	root.PersistentFlags().StringVar(&flagOutputFormat, "output-format", "text", "output format (text, json)")
-
 	root.AddCommand(
 		newUpCmd(),
 		newExecCmd(),
@@ -30,6 +31,8 @@ func NewRootCmd(version string) *cobra.Command {
 		newStopCmd(),
 		newDownCmd(),
 		newListCmd(),
+		newStatusCmd(),
+		newLogsCmd(),
 		newCleanCmd(),
 		newConfigCmd(),
 		newInitCmd(),

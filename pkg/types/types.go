@@ -1,5 +1,7 @@
 package types
 
+import "sort"
+
 // DevContainerConfig represents a parsed devcontainer.json.
 type DevContainerConfig struct {
 	Name                 string            `json:"name,omitempty"`
@@ -135,6 +137,19 @@ func (d *DevcCustomization) ResolvedAgents() []string {
 		result = append(result, d.Agent)
 	}
 	return result
+}
+
+// EnabledServiceNames returns the names of enabled sibling services in
+// deterministic (sorted) order.
+func (d *DevcCustomization) EnabledServiceNames() []string {
+	var names []string
+	for name, svc := range d.Services {
+		if svc != nil && svc.Enabled {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 type NetworkConfig struct {

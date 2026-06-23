@@ -73,6 +73,7 @@ const (
 	StateStopped  ContainerState = "stopped"
 	StateNotFound ContainerState = "not_found"
 	StateCreated  ContainerState = "created"
+	StatePaused   ContainerState = "paused"
 )
 
 // ContainerInspectResult holds the state and labels of an inspected container.
@@ -97,6 +98,8 @@ func (c *Client) Inspect(name string) ContainerInspectResult {
 		state = StateStopped
 	case "created":
 		state = StateCreated
+	case "paused":
+		state = StatePaused
 	default:
 		state = StateStopped
 	}
@@ -394,6 +397,13 @@ func (c *Client) Start(name string) error {
 	return err
 }
 
+// Unpause resumes a paused container.
+func (c *Client) Unpause(name string) error {
+	ctx := context.Background()
+	_, err := c.api.ContainerUnpause(ctx, name, dockerclient.ContainerUnpauseOptions{})
+	return err
+}
+
 // Stop stops a running container.
 func (c *Client) Stop(name string) error {
 	ctx := context.Background()
@@ -401,6 +411,26 @@ func (c *Client) Stop(name string) error {
 	_, err := c.api.ContainerStop(ctx, name, dockerclient.ContainerStopOptions{
 		Timeout: &timeout,
 	})
+	return err
+}
+
+// Logs streams a container's stdout and stderr to out. When follow is true it
+// blocks and streams new output until the process is interrupted. Containers are
+// created without a TTY, so the multiplexed stream is demultiplexed via stdcopy.
+func (c *Client) Logs(name string, follow bool, out io.Writer) error {
+	ctx := context.Background()
+	reader, err := c.api.ContainerLogs(ctx, name, dockerclient.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     follow,
+		Tail:       "all",
+	})
+	if err != nil {
+		return fmt.Errorf("reading logs: %w", err)
+	}
+	defer reader.Close()
+
+	_, err = stdcopy.StdCopy(out, out, reader)
 	return err
 }
 

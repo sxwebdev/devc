@@ -1,6 +1,10 @@
 package security
 
-import "github.com/sxwebdev/devc/pkg/types"
+import (
+	"sort"
+
+	"github.com/sxwebdev/devc/pkg/types"
+)
 
 var profiles = map[string]*types.SecurityProfile{
 	"strict": {
@@ -40,6 +44,17 @@ var profiles = map[string]*types.SecurityProfile{
 		DropAllCaps: false,
 		RunAsUser:   "1000:1000",
 	},
+}
+
+// ProfileNames returns the known security profile names in sorted order. This
+// is the source of truth for validating a configured securityProfile.
+func ProfileNames() []string {
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // GetProfile returns the security profile for the given name.

@@ -36,7 +36,7 @@ func LoadDevcontainerConfig(workspaceFolder string) (*types.DevContainerConfig, 
 		return &cfg, nil
 	}
 
-	return nil, fmt.Errorf("no devcontainer.json found in %s", workspaceFolder)
+	return nil, fmt.Errorf("no devcontainer.json found in %s; run 'devc init' to create one", workspaceFolder)
 }
 
 // LoadGlobalConfig reads ~/.devc/config.json.
@@ -57,6 +57,25 @@ func LoadGlobalConfig() (*types.GlobalConfig, error) {
 		return nil, fmt.Errorf("parsing global config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// LoadMerged loads devcontainer.json and the global defaults for a workspace and
+// returns the parsed config plus the merged devc customization. It is the single
+// entry point for "give me the effective config" used by status/attach/config.
+func LoadMerged(workspaceFolder string) (*types.DevContainerConfig, *types.DevcCustomization, error) {
+	devCfg, err := LoadDevcontainerConfig(workspaceFolder)
+	if err != nil {
+		return nil, nil, err
+	}
+	globalCfg, err := LoadGlobalConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	custom, err := ExtractDevcCustomization(devCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return devCfg, MergeCustomization(globalCfg, custom), nil
 }
 
 // ExtractDevcCustomization pulls the devc-specific customization from devcontainer.json.
@@ -190,6 +209,44 @@ func defaultGlobalConfig() *types.GlobalConfig {
 	return &types.GlobalConfig{
 		Defaults: *defaultDevcCustomization(),
 	}
+}
+
+// GlobalConfigPath returns the path to the global config file (~/.devc/config.json).
+func GlobalConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, DevcDir, ConfigFileName), nil
+}
+
+// DefaultGlobalConfig returns the built-in global defaults applied when no
+// ~/.devc/config.json is present.
+func DefaultGlobalConfig() *types.GlobalConfig {
+	return defaultGlobalConfig()
+}
+
+// WriteGlobalConfig writes cfg to ~/.devc/config.json (creating ~/.devc if
+// needed) and returns the path. It refuses to overwrite an existing file.
+func WriteGlobalConfig(cfg *types.GlobalConfig) (string, error) {
+	path, err := GlobalConfigPath()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path, fmt.Errorf("%s already exists; edit it directly", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func defaultDevcCustomization() *types.DevcCustomization {

@@ -154,7 +154,8 @@ func (m *Manager) setupServices(containerName, networkName string, custom *types
 		if spec.HostPort > 0 && spec.ContainerPort == 0 {
 			m.warn(
 				"service %q sets hostPort but no containerPort (and no default is known); host port not published — set \"containerPort\"",
-				spec.Alias)
+				spec.Alias,
+			)
 		}
 		fmt.Printf("Starting service %s (%s)...\n", spec.Alias, spec.Image)
 		if err := m.Docker.CreateService(spec); err != nil {

@@ -106,6 +106,30 @@ agent's LLM token is forwarded (so it just works), while git, forge, cloud, and
 SSH credentials are withheld. Set `"credentialPolicy": "none"` explicitly if you
 want maximum isolation and are willing to log in inside the container.
 
+### The `secure-local-strict` preset
+
+For maximum isolation, `secure-local-strict` builds on `secure-local-agent` but:
+
+- Sets `credentialPolicy: none` — **no** host credentials reach the container,
+  including the agent's own LLM token. The agent must authenticate
+  container-locally (log in inside the container on a fresh build); that login
+  does not persist across a rebuild.
+- Enables an **enforced** egress firewall
+  (`network.mode: restricted`, `network.enforce: true`) with a baseline
+  allowlist (`api.anthropic.com`, `registry.npmjs.org`, `pypi.org`,
+  `files.pythonhosted.org`, `proxy.golang.org`, `github.com`). Each agent
+  profile's own required domains are merged on top automatically. This requires
+  `iptables` in the image and adds `NET_ADMIN`/`NET_RAW` capabilities
+  (experimental).
+
+```bash
+devc init --preset secure-local-strict --agent claude
+devc up
+```
+
+Everything else (gitPolicy, workspaceSecretsPolicy, skills) matches
+`secure-local-agent`.
+
 ## `workspaceSecretsPolicy`
 
 Some repositories contain local secret files (`.env`, `secrets.yaml`,
@@ -128,6 +152,10 @@ created after container start are not masked.
 - `allowPatterns` exempts example/sample files (`.env.example`, etc.).
 - The `.git` directory is always ignored.
 - Findings are reported as workspace-relative paths.
+- With `mode=fail`, the scan also runs on `devc exec` and `devc shell`/`attach`,
+  not just `devc up`. A secret file created **after** the container started
+  still blocks a new `exec`/`shell` session, so the gate can't be bypassed by
+  dropping a `.env` into a running container.
 
 ### What to do if `.env` or `config.yaml` exists in the repo
 

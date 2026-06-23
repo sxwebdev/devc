@@ -30,6 +30,33 @@ func TestApply_SecureLocalAgent(t *testing.T) {
 	}
 }
 
+func TestApply_SecureLocalStrict(t *testing.T) {
+	c := Apply("secure-local-strict")
+	if c == nil {
+		t.Fatal("Apply(secure-local-strict) returned nil")
+	}
+	if c.CredentialPolicy != types.CredentialPolicyNone {
+		t.Errorf("credentialPolicy = %q, want none", c.CredentialPolicy)
+	}
+	// Inherits the rest of the secure-local-agent posture.
+	if c.GitPolicy != types.GitPolicyCommitOnly {
+		t.Errorf("gitPolicy = %q, want commitOnly", c.GitPolicy)
+	}
+	if c.WorkspaceSecretsPolicy == nil || !c.WorkspaceSecretsPolicy.Enabled || c.WorkspaceSecretsPolicy.Mode != types.SecretsModeFail {
+		t.Errorf("workspaceSecretsPolicy = %+v, want enabled fail", c.WorkspaceSecretsPolicy)
+	}
+	// Enforced egress firewall with a non-empty allowlist.
+	if c.Network == nil {
+		t.Fatal("expected a network config")
+	}
+	if !c.Network.Enforce {
+		t.Error("strict preset must enforce the egress firewall")
+	}
+	if len(c.Network.Allowlist) == 0 {
+		t.Error("strict preset must ship a non-empty allowlist")
+	}
+}
+
 func TestApply_Unknown(t *testing.T) {
 	if Apply("nope") != nil {
 		t.Error("expected nil for unknown preset")

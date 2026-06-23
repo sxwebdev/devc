@@ -78,7 +78,7 @@ const (
 const (
 	SecretsModeOff      = "off"      // Do nothing (existing behavior).
 	SecretsModeFail     = "fail"     // Refuse to start if protected files are present in the workspace.
-	SecretsModeMask     = "mask"     // Technically hide protected files from the agent (implemented in a later milestone).
+	SecretsModeMask     = "mask"     // Shadow protected files with empty read-only bind mounts so the agent sees them as empty.
 	SecretsModeReadonly = "readonly" // Mount protected files read-only (less safe; not used by the secure preset).
 )
 

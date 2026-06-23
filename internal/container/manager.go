@@ -296,7 +296,8 @@ func (m *Manager) createContainer(
 		if !servicesNetworkOK(custom) {
 			m.warn(
 				"services are enabled but network mode %q has no private network for DNS aliases; services skipped (use a bridge/restricted profile, or reach services via published 127.0.0.1 ports)",
-				effectiveNetworkMode(custom))
+				effectiveNetworkMode(custom),
+			)
 		} else {
 			networkName = serviceNetworkName(containerName)
 			if err := m.setupServices(containerName, networkName, custom); err != nil {
@@ -406,6 +407,18 @@ func (m *Manager) applyEgressFirewall(containerName string, agentProfiles []*age
 func (m *Manager) Exec(workspaceFolder string, command []string) error {
 	containerName := config.ContainerName(workspaceFolder)
 
+	// Enforce the workspace secrets policy before running anything: a protected
+	// file added after `devc up` must not become reachable via `devc exec` /
+	// `devc shell`. Without this, the gate only ran at create time. A config-load
+	// failure is fatal here because we cannot verify the policy without it.
+	_, merged, err := config.LoadMerged(workspaceFolder)
+	if err != nil {
+		return fmt.Errorf("loading config to enforce secrets policy: %w", err)
+	}
+	if err := enforceWorkspaceSecrets(workspaceFolder, merged); err != nil {
+		return err
+	}
+
 	state := m.Docker.Inspect(containerName).State
 	if state != docker.StateRunning {
 		return fmt.Errorf("container %s is not running (state: %s); run 'devc up' to start it", containerName, state)
@@ -422,18 +435,26 @@ func (m *Manager) Exec(workspaceFolder string, command []string) error {
 func (m *Manager) Attach(workspaceFolder, shell string) error {
 	containerName := config.ContainerName(workspaceFolder)
 
+	// Load config and enforce the secrets policy before attaching to a running OR
+	// stopped container, so a protected file added after `devc up` blocks the
+	// shell. A config-load failure is fatal here because we cannot verify the
+	// policy without it (the same merged config is reused to restore services).
+	_, merged, err := config.LoadMerged(workspaceFolder)
+	if err != nil {
+		return fmt.Errorf("loading config to enforce secrets policy: %w", err)
+	}
+	if err := enforceWorkspaceSecrets(workspaceFolder, merged); err != nil {
+		return err
+	}
+
 	switch state := m.Docker.Inspect(containerName).State; state {
 	case docker.StateRunning:
 		// Already running — attach directly.
 	case docker.StateStopped, docker.StateCreated:
 		// Best-effort: bring sibling services (and their network) back the same
-		// way `up` does. A config-load failure doesn't block starting the
-		// container, but warn since services/connection env may be degraded.
-		if _, merged, err := config.LoadMerged(workspaceFolder); err == nil {
-			m.ensureServicesForExisting(containerName, merged)
-		} else {
-			m.warn("could not load config to restore services: %v", err)
-		}
+		// way `up` does. Service restoration stays soft (it only warns); the
+		// secrets gate above is the hard guarantee.
+		m.ensureServicesForExisting(containerName, merged)
 		fmt.Printf("Starting existing container %s...\n", containerName)
 		if err := m.Docker.Start(containerName); err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -455,7 +476,7 @@ func (m *Manager) Attach(workspaceFolder, shell string) error {
 	count, _ := m.Session.Attach(containerName)
 	fmt.Printf("Attached (%s)\n", session.FormatCount(count))
 
-	err := m.Docker.Exec(containerName, []string{shell}, true)
+	err = m.Docker.Exec(containerName, []string{shell}, true)
 
 	remaining, _ := m.Session.Detach(containerName)
 	fmt.Printf("Detached (%s)\n", session.FormatCount(remaining))
@@ -714,8 +735,9 @@ func (m *Manager) installGitWrapper(containerName string) {
 }
 
 // enforceWorkspaceSecrets applies the workspace secrets policy before container
-// startup. mode=fail aborts when protected files are present; mode=mask is not
-// yet implemented; off/readonly are handled elsewhere (readonly at mount time).
+// startup. mode=fail aborts when protected files are present; off/readonly/mask
+// are technical controls applied at mount time during container creation, so
+// they are no-ops here (readonly/mask shadow the files via bind mounts).
 func enforceWorkspaceSecrets(workspaceFolder string, custom *types.DevcCustomization) error {
 	sp := custom.WorkspaceSecretsPolicy
 	if !secrets.IsEnabled(sp) {

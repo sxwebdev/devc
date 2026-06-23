@@ -15,8 +15,9 @@ import (
 // builders maps preset names to functions that produce a fresh customization.
 // Each call returns a new value so callers can mutate the result safely.
 var builders = map[string]func() *types.DevcCustomization{
-	"secure-local-agent": secureLocalAgent,
-	"secure-local":       secureLocalAgent, // alias
+	"secure-local-agent":  secureLocalAgent,
+	"secure-local":        secureLocalAgent, // alias
+	"secure-local-strict": secureLocalStrict,
 }
 
 // Apply returns the customization for a named preset, or nil if the name is
@@ -67,4 +68,29 @@ func secureLocalAgent() *types.DevcCustomization {
 			ReadOnly: &readonly,
 		},
 	}
+}
+
+// secureLocalStrict is the maximum-isolation variant of secureLocalAgent: it
+// withholds ALL host credentials (including the agent's own — the agent must
+// authenticate container-locally) and turns the network allowlist into a real
+// enforced egress firewall. Everything else matches secureLocalAgent.
+func secureLocalStrict() *types.DevcCustomization {
+	c := secureLocalAgent()
+	c.CredentialPolicy = types.CredentialPolicyNone
+	c.Network = &types.NetworkConfig{
+		Mode:    "restricted",
+		Enforce: true,
+		// Baseline package-registry and source-control egress. Agent profile
+		// allowlists (e.g. api.anthropic.com for Claude) are merged on top at
+		// firewall-application time via egressDomains.
+		Allowlist: []string{
+			"api.anthropic.com",
+			"registry.npmjs.org",
+			"pypi.org",
+			"files.pythonhosted.org",
+			"proxy.golang.org",
+			"github.com",
+		},
+	}
+	return c
 }

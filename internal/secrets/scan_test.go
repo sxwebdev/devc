@@ -86,6 +86,49 @@ func TestScan_DetectsAndAllows(t *testing.T) {
 	}
 }
 
+func TestScan_NewDefaultPatterns(t *testing.T) {
+	root := t.TempDir()
+
+	detected := []string{
+		"db.local.yaml",
+		"db.local.yml",
+		"tokens.secret.json",
+		"private_key.json",
+		"app-credentials.json",
+		"server.pem",
+		"id_rsa",
+		"id_ed25519",
+	}
+	for _, f := range detected {
+		writeFile(t, root, f)
+	}
+
+	// The example allow list must still win over the new patterns.
+	allowed := []string{".env.example", "config.example.yaml"}
+	for _, f := range allowed {
+		writeFile(t, root, f)
+	}
+
+	findings, err := Scan(root, nil, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, f := range findings {
+		got[filepath.ToSlash(f)] = true
+	}
+	for _, d := range detected {
+		if !got[d] {
+			t.Errorf("expected %q to be detected; findings=%v", d, findings)
+		}
+	}
+	for _, a := range allowed {
+		if got[a] {
+			t.Errorf("did not expect allow-listed %q to be detected", a)
+		}
+	}
+}
+
 func TestScan_RelativePathsSorted(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, filepath.Join("z", ".env"))

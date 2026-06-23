@@ -27,6 +27,11 @@ var defaultPatterns = []string{
 	".npmrc", ".pypirc", ".netrc", ".envrc",
 	"application-local.yml", "application-local.yaml",
 	"application-secrets.yml", "application-secrets.yaml",
+	"*.local.yaml", "*.local.yml",
+	"*.secret.*",
+	"private*.json",
+	"*-credentials.*",
+	"*.pem", "id_rsa", "id_ed25519",
 }
 
 // defaultAllowPatterns lists example/sample files that look like secrets but are

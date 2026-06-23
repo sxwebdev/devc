@@ -11,6 +11,8 @@ import (
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/preset"
+	"github.com/sxwebdev/devc/internal/secrets"
+	"github.com/sxwebdev/devc/pkg/types"
 )
 
 func newInitCmd() *cobra.Command {
@@ -124,6 +126,18 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 				envSeen := make(map[string]bool)
 				allowSeen := make(map[string]bool)
 
+				// Seed the allowlist with any baseline already in the config (e.g.
+				// the strict preset's package-registry domains) so the agent's own
+				// domains are unioned in rather than replacing it.
+				if net, ok := devcConfig["network"].(map[string]any); ok {
+					for _, d := range allowlistStrings(net["allowlist"]) {
+						if !allowSeen[d] {
+							allowSeen[d] = true
+							allAllowlist = append(allAllowlist, d)
+						}
+					}
+				}
+
 				for name := range strings.SplitSeq(agentFlag, ",") {
 					name = strings.TrimSpace(name)
 					if name == "" {
@@ -211,65 +225,96 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 }
 
 // secureDevcConfig produces a self-documenting devc customization block for a
-// security preset. The "preset" field drives behavior at runtime; the explicit
-// fields make the resulting protections visible and easy to tweak.
+// security preset. The security posture is derived entirely from the preset
+// (the single source of truth), so init never keeps a parallel hardcoded copy
+// of credentialPolicy/gitPolicy/network/skills that could silently drift. init
+// only layers on editable starter conveniences that are not part of the preset.
 func secureDevcConfig(presetName string) map[string]any {
-	return map[string]any{
-		"preset":           presetName,
-		"securityProfile":  "moderate",
-		"credentialPolicy": "agentOnly",
-		"gitPolicy":        "commitOnly",
-		"network": map[string]any{
-			"mode":      "restricted",
-			"allowlist": []string{},
-		},
-		"resources": map[string]any{
-			"cpus":      "4",
-			"memory":    "8g",
-			"pidsLimit": 256,
-		},
-		"session": map[string]any{
-			"stopOnLastDetach": true,
-		},
-		"workspaceSecretsPolicy": map[string]any{
+	c := preset.Apply(presetName)
+	if c == nil {
+		c = &types.DevcCustomization{}
+	}
+	c.Preset = presetName
+
+	// Materialize the built-in default secret lists as an editable starter set
+	// that matches runtime detection exactly (the preset leaves them empty so the
+	// runtime falls back to these same defaults).
+	if c.WorkspaceSecretsPolicy != nil {
+		c.WorkspaceSecretsPolicy.Patterns = secrets.DefaultPatterns()
+		c.WorkspaceSecretsPolicy.AllowPatterns = secrets.DefaultAllowPatterns()
+	}
+
+	// Ensure a network block exists so the agent-domain allowlist has a place to
+	// be written; presets that already define one (strict's enforced firewall)
+	// keep their settings.
+	if c.Network == nil {
+		c.Network = &types.NetworkConfig{Mode: "restricted"}
+	}
+
+	devc := customizationToMap(c)
+
+	// init-only starter conveniences (not part of the security preset).
+	devc["resources"] = map[string]any{
+		"cpus":      "4",
+		"memory":    "8g",
+		"pidsLimit": 256,
+	}
+	devc["session"] = map[string]any{
+		"stopOnLastDetach": true,
+	}
+	devc["services"] = map[string]any{
+		"postgres": map[string]any{
 			"enabled":       true,
-			"mode":          "fail",
-			"patterns":      []string{".env", ".env.*", "*.env", "config.yaml", "config.yml", "secrets.yaml", "secrets.yml", "credentials.json", "service-account*.json", ".npmrc", ".pypirc", ".netrc"},
-			"allowPatterns": []string{".env.example", ".env.sample", "*.example.yaml", "*.sample.yaml"},
-		},
-		"skills": map[string]any{
-			"enabled":  true,
-			"source":   "~/.agent/skills",
-			"target":   "/skills",
-			"readonly": true,
-			"required": false,
-		},
-		"services": map[string]any{
-			"postgres": map[string]any{
-				"enabled":       true,
-				"image":         "postgres:16",
-				"containerPort": 5432,
-				"hostPort":      54321,
-				"hostIP":        "127.0.0.1",
-				"env": map[string]any{
-					"POSTGRES_USER":     "app",
-					"POSTGRES_PASSWORD": "app",
-					"POSTGRES_DB":       "app",
-				},
-				"volumes": []any{
-					map[string]any{"name": "postgres-data", "target": "/var/lib/postgresql/data"},
-				},
+			"image":         "postgres:16",
+			"containerPort": 5432,
+			"hostPort":      54321,
+			"hostIP":        "127.0.0.1",
+			"env": map[string]any{
+				"POSTGRES_USER":     "app",
+				"POSTGRES_PASSWORD": "app",
+				"POSTGRES_DB":       "app",
 			},
-			"redis": map[string]any{
-				"enabled":       true,
-				"image":         "redis:7",
-				"containerPort": 6379,
-				"hostPort":      63791,
-				"hostIP":        "127.0.0.1",
-				"volumes": []any{
-					map[string]any{"name": "redis-data", "target": "/data"},
-				},
+			"volumes": []any{
+				map[string]any{"name": "postgres-data", "target": "/var/lib/postgresql/data"},
+			},
+		},
+		"redis": map[string]any{
+			"enabled":       true,
+			"image":         "redis:7",
+			"containerPort": 6379,
+			"hostPort":      63791,
+			"hostIP":        "127.0.0.1",
+			"volumes": []any{
+				map[string]any{"name": "redis-data", "target": "/data"},
 			},
 		},
 	}
+	return devc
+}
+
+// customizationToMap renders a customization as a generic JSON object so the
+// init flow can extend it with fields that are not part of the preset.
+func customizationToMap(c *types.DevcCustomization) map[string]any {
+	data, _ := json.Marshal(c)
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	return m
+}
+
+// allowlistStrings coerces a network allowlist value into []string. A hand-built
+// config carries []string; one rendered from a struct via JSON carries []any.
+func allowlistStrings(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
 }

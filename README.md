@@ -167,6 +167,10 @@ credentials, blocks in-repo secrets from reaching the agent, and disables
 devc init --preset secure-local-agent --agent claude
 ```
 
+For maximum isolation use `--preset secure-local-strict`: it withholds **all**
+host credentials (the agent authenticates inside the container) and turns on an
+enforced egress firewall.
+
 See [docs/secure-local-agent.md](docs/secure-local-agent.md) for the threat
 model, the `credentialPolicy` / `workspaceSecretsPolicy` / `gitPolicy` settings,
 the read-only skills mount, service containers (Postgres/Redis), `forwardPorts`,

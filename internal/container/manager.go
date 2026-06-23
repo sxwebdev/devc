@@ -484,23 +484,44 @@ func (m *Manager) linkAgentBinary(containerName string, profile *agent.Profile, 
 }
 
 // gitWrapperScript blocks `git push` while delegating every other invocation to
-// the real git binary, whose absolute path is discovered at install time. It is
-// installed at /usr/local/bin/git, which precedes /usr/bin on PATH.
+// the real git binary. It is installed at /usr/local/bin/git, which precedes
+// /usr/bin on PATH.
+//
+// The wrapper resolves the real subcommand by skipping leading global options
+// (and their arguments, e.g. `git -C dir push` / `git -c k=v push`) so the push
+// block cannot be bypassed with a leading flag. The installer is idempotent: the
+// real binary is preserved once at /usr/local/bin/git.real and reused on re-run.
 const gitWrapperScript = `set -e
-REAL_GIT="$(command -v git || true)"
-if [ -z "$REAL_GIT" ]; then
-  echo "devc: git not found, skipping gitPolicy wrapper" >&2
-  exit 0
-fi
 mkdir -p /usr/local/bin
-# If git already resolves to our target, preserve the real binary first.
-if [ "$REAL_GIT" = "/usr/local/bin/git" ]; then
-  cp /usr/local/bin/git /usr/local/bin/git.real
-  REAL_GIT="/usr/local/bin/git.real"
+if [ -x /usr/local/bin/git.real ]; then
+  REAL_GIT=/usr/local/bin/git.real
+else
+  REAL_GIT="$(command -v git || true)"
+  if [ -z "$REAL_GIT" ]; then
+    echo "devc: git not found, skipping gitPolicy wrapper" >&2
+    exit 0
+  fi
+  if [ "$REAL_GIT" = "/usr/local/bin/git" ]; then
+    echo "devc: cannot locate real git binary, skipping gitPolicy wrapper" >&2
+    exit 0
+  fi
+  cp "$REAL_GIT" /usr/local/bin/git.real
+  REAL_GIT=/usr/local/bin/git.real
 fi
 cat > /usr/local/bin/git <<EOF
 #!/bin/sh
-if [ "\$1" = "push" ]; then
+# Find the subcommand, skipping leading global options and their arguments.
+sub=
+skip=0
+for arg in "\$@"; do
+  if [ "\$skip" = 1 ]; then skip=0; continue; fi
+  case "\$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path) skip=1 ;;
+    -*) ;;
+    *) sub="\$arg"; break ;;
+  esac
+done
+if [ "\$sub" = "push" ]; then
   echo "git push is disabled by devc gitPolicy=commitOnly" >&2
   exit 1
 fi

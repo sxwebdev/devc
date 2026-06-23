@@ -269,6 +269,12 @@ func (c *Client) CreateAndStart(
 		env = append(env, "SSH_AUTH_SOCK="+containerSock)
 	}
 
+	// Finalize the container env: the skills and SSH_AUTH_SOCK entries above are
+	// appended after the containerCfg literal captured `env`, so re-point Env at
+	// the final slice. Without this, late appends silently never reach the
+	// container.
+	containerCfg.Env = env
+
 	hostCfg := &container.HostConfig{
 		Mounts:      mounts,
 		SecurityOpt: []string{"no-new-privileges"},

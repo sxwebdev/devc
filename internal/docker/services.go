@@ -121,6 +121,9 @@ func (c *Client) CreateService(spec ServiceSpec) error {
 
 	// Publish the container port to the host (localhost-only by default).
 	if spec.ContainerPort > 0 {
+		if spec.ContainerPort > 65535 {
+			return fmt.Errorf("invalid container port %d for service %s (1-65535)", spec.ContainerPort, spec.Alias)
+		}
 		port, ok := network.PortFrom(uint16(spec.ContainerPort), network.TCP)
 		if !ok {
 			return fmt.Errorf("invalid container port %d for service %s", spec.ContainerPort, spec.Alias)

@@ -64,10 +64,19 @@ func parseForwardEntry(e any) (hostIP string, hostPort, containerPort uint16, pr
 
 	switch v := e.(type) {
 	case float64:
-		p := uint16(v)
+		if v != float64(int(v)) {
+			return "", 0, 0, proto, fmt.Errorf("invalid forwardPorts entry %v: not an integer", e)
+		}
+		p, perr := validPort(int(v))
+		if perr != nil {
+			return "", 0, 0, proto, fmt.Errorf("invalid forwardPorts entry %v: %w", e, perr)
+		}
 		return hostIP, p, p, proto, nil
 	case int:
-		p := uint16(v)
+		p, perr := validPort(v)
+		if perr != nil {
+			return "", 0, 0, proto, fmt.Errorf("invalid forwardPorts entry %v: %w", e, perr)
+		}
 		return hostIP, p, p, proto, nil
 	case string:
 		s := strings.TrimSpace(v)
@@ -119,8 +128,14 @@ func parsePort(s string) (uint16, error) {
 	if err != nil {
 		return 0, err
 	}
+	return validPort(n)
+}
+
+// validPort bounds-checks a port number before the uint16 conversion so large
+// or negative values are rejected instead of silently wrapping.
+func validPort(n int) (uint16, error) {
 	if n < 1 || n > 65535 {
-		return 0, fmt.Errorf("port %d out of range", n)
+		return 0, fmt.Errorf("port %d out of range (1-65535)", n)
 	}
 	return uint16(n), nil
 }

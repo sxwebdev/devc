@@ -25,11 +25,21 @@ type configSnapshot struct {
 	ResourcesCPUs     string            `json:"cpus,omitempty"`
 	ResourcesMemory   string            `json:"memory,omitempty"`
 	NetworkMode       string            `json:"networkMode,omitempty"`
+	NetworkEnforce    bool              `json:"networkEnforce,omitempty"`
+	NetworkAllowlist  []string          `json:"networkAllowlist,omitempty"`
 	AgentMounts       []mountSnapshot   `json:"agentMounts,omitempty"`
 	CredentialPolicy  string            `json:"credentialPolicy,omitempty"`
 	GitPolicy         string            `json:"gitPolicy,omitempty"`
+	Secrets           *secretsSnapshot  `json:"secrets,omitempty"`
 	Skills            *skillsSnapshot   `json:"skills,omitempty"`
 	Services          []serviceSnapshot `json:"services,omitempty"`
+}
+
+type secretsSnapshot struct {
+	Enabled       bool     `json:"enabled"`
+	Mode          string   `json:"mode,omitempty"`
+	Patterns      []string `json:"patterns,omitempty"`
+	AllowPatterns []string `json:"allowPatterns,omitempty"`
 }
 
 type serviceSnapshot struct {
@@ -115,6 +125,17 @@ func ConfigHash(devCfg *types.DevContainerConfig, custom *types.DevcCustomizatio
 	}
 	if custom.Network != nil {
 		snap.NetworkMode = custom.Network.Mode
+		snap.NetworkEnforce = custom.Network.Enforce
+		snap.NetworkAllowlist = custom.Network.Allowlist
+	}
+
+	if custom.WorkspaceSecretsPolicy != nil && custom.WorkspaceSecretsPolicy.Enabled {
+		snap.Secrets = &secretsSnapshot{
+			Enabled:       true,
+			Mode:          custom.WorkspaceSecretsPolicy.Mode,
+			Patterns:      custom.WorkspaceSecretsPolicy.Patterns,
+			AllowPatterns: custom.WorkspaceSecretsPolicy.AllowPatterns,
+		}
 	}
 
 	// Include agent mount specs so changes to mount modes trigger rebuild

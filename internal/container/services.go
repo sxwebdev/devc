@@ -3,11 +3,16 @@ package container
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 
 	"github.com/sxwebdev/devc/internal/docker"
 	"github.com/sxwebdev/devc/pkg/types"
 )
+
+// serviceKeyRe matches service keys that are safe to use as a DNS alias,
+// container-name suffix, and connection-string host: a lowercase DNS label.
+var serviceKeyRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // servicesEnabled reports whether any service is enabled.
 func servicesEnabled(custom *types.DevcCustomization) bool {
@@ -131,6 +136,9 @@ func (m *Manager) setupServices(containerName, networkName string, custom *types
 		return err
 	}
 	for _, spec := range buildServiceSpecs(custom, containerName, networkName) {
+		if !serviceKeyRe.MatchString(spec.Alias) {
+			return fmt.Errorf("invalid service name %q: use a lowercase DNS label ([a-z0-9-], e.g. \"postgres\")", spec.Alias)
+		}
 		if spec.Image == "" {
 			return fmt.Errorf("service %q has no image", spec.Alias)
 		}

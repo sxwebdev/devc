@@ -59,9 +59,17 @@ func TestParseForwardPorts_Empty(t *testing.T) {
 }
 
 func TestParseForwardPorts_Invalid(t *testing.T) {
-	for _, bad := range []any{"notaport", "70000", "1:2:3:4", "8080:bad", true} {
-		if _, _, err := parseForwardPorts([]any{bad}); err == nil {
-			t.Errorf("expected error for %v", bad)
+	bad := []any{
+		"notaport", "70000", "1:2:3:4", "8080:bad", true,
+		float64(70000),  // numeric out of range must not silently wrap
+		float64(-1),     // negative
+		float64(0),      // zero
+		float64(3000.5), // non-integer
+		int(70000),
+	}
+	for _, b := range bad {
+		if _, _, err := parseForwardPorts([]any{b}); err == nil {
+			t.Errorf("expected error for %v (%T)", b, b)
 		}
 	}
 }

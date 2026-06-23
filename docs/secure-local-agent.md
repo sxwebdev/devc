@@ -208,6 +208,12 @@ The agent runs as a non-root user, so it cannot flush these rules.
 >   rotate may become unreachable. Add domains conservatively and test.
 > - Behavior varies across Docker hosts (rootless, Docker Desktop, unusual
 >   networking). Verify on your setup.
+> - **Not a hard exfiltration boundary.** To let the agent reach sibling
+>   services, all private ranges (`10/8`, `172.16/12`, `192.168/16`) and DNS
+>   (port 53 to any resolver) are allowed. A determined agent can still reach
+>   LAN hosts / other containers on private IPs or tunnel data over DNS. The
+>   filter blocks accidental/lazy egress to non-allowlisted public IPs, not a
+>   motivated adversary.
 >
 > Because of these caveats, `enforce` is **opt-in** and is not turned on by the
 > `secure-local-agent` preset.

@@ -106,7 +106,7 @@ type WorkspaceSecretsPolicy struct {
 // SkillsConfig configures a read-only skills mount inside the container.
 type SkillsConfig struct {
 	Enabled  bool   `json:"enabled,omitempty"`
-	Source   string `json:"source,omitempty"`   // Host path; ~ is expanded. Default: ~/.agent/skills
+	Source   string `json:"source,omitempty"`   // Host path; ~ is expanded. Default: ~/.agents/skills
 	Target   string `json:"target,omitempty"`   // Container path. Default: /skills
 	ReadOnly *bool  `json:"readonly,omitempty"` // Default: true
 	Required bool   `json:"required,omitempty"` // If true, a missing source path is a hard error.

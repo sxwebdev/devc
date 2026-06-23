@@ -121,11 +121,11 @@ type filterNode struct {
 }
 
 var (
-	_ = (fs.NodeLookuper)((*filterNode)(nil))
-	_ = (fs.NodeOpendirHandler)((*filterNode)(nil))
-	_ = (fs.NodeGetattrer)((*filterNode)(nil))
-	_ = (fs.NodeRenamer)((*filterNode)(nil))
-	_ = (fs.NodeLinker)((*filterNode)(nil))
+	_ = fs.NodeLookuper((*filterNode)(nil))
+	_ = fs.NodeOpendirHandler((*filterNode)(nil))
+	_ = fs.NodeGetattrer((*filterNode)(nil))
+	_ = fs.NodeRenamer((*filterNode)(nil))
+	_ = fs.NodeLinker((*filterNode)(nil))
 )
 
 // rel returns the workspace-relative path of a child named `name` of this node.
@@ -250,9 +250,9 @@ type sliceDirStream struct {
 }
 
 var (
-	_ = (fs.FileReaddirenter)((*sliceDirStream)(nil))
-	_ = (fs.FileSeekdirer)((*sliceDirStream)(nil))
-	_ = (fs.FileReleasedirer)((*sliceDirStream)(nil))
+	_ = fs.FileReaddirenter((*sliceDirStream)(nil))
+	_ = fs.FileSeekdirer((*sliceDirStream)(nil))
+	_ = fs.FileReleasedirer((*sliceDirStream)(nil))
 )
 
 func (d *sliceDirStream) Readdirent(_ context.Context) (*fuse.DirEntry, syscall.Errno) {

@@ -66,7 +66,7 @@ func secureLocalAgent() *types.DevcCustomization {
 		},
 		Skills: &types.SkillsConfig{
 			Enabled:  true,
-			Source:   "~/.agent/skills",
+			Source:   "~/.agents/skills",
 			Target:   "/skills",
 			ReadOnly: &readonly,
 		},

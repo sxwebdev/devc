@@ -37,7 +37,7 @@ This expands (via the `preset` field) to roughly:
       "workspaceSecretsPolicy": { "enabled": true, "mode": "hide" },
       "skills": {
         "enabled": true,
-        "source": "~/.agent/skills",
+        "source": "~/.agents/skills",
         "target": "/skills",
         "readonly": true,
         "required": false
@@ -84,7 +84,7 @@ the rest of the preset.
 - Any service you expose to the container
 - In-repo secret files when `workspaceSecretsPolicy` is disabled or set to
   `off`/`readonly`. (With `mode=hide`, secrets are also hidden from any app you
-  run *inside* the container, since the FUSE filter cannot distinguish the agent
+  run _inside_ the container, since the FUSE filter cannot distinguish the agent
   from other in-container processes — supply such secrets via env vars instead.)
 
 ## `credentialPolicy`
@@ -141,12 +141,12 @@ service-account JSON, `.npmrc`, …). This policy controls what happens when suc
 files are present.
 
 | Mode       | Behavior                                                                                                                              |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `off`      | Do nothing (existing behavior).                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `off`      | Do nothing (existing behavior).                                                                                                       |
 | `hide`     | Mount the workspace through a FUSE filter that hides matching files from the agent **dynamically** — any path, any time. Recommended. |
-| `fail`     | Refuse to start and list the protected files.                                                                                       |
-| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                                                      |
-| `mask`     | Shadow each protected file (present at startup) with an empty file (technical control).                                             |
+| `fail`     | Refuse to start and list the protected files.                                                                                         |
+| `readonly` | Mount each protected file read-only (the agent can still read it — less safe).                                                        |
+| `mask`     | Shadow each protected file (present at startup) with an empty file (technical control).                                               |
 
 ### `hide` (default for the secure preset)
 
@@ -170,7 +170,7 @@ Claude Code.
   runs as root; the agent stays non-root, so it never wields this capability.
 - If the FUSE mount fails to come up, `devc up` fails loudly — it never silently
   falls back to exposing secrets.
-- **Tradeoff:** the filter hides files from *all* processes in the container,
+- **Tradeoff:** the filter hides files from _all_ processes in the container,
   including an app you run inside it. If a service in the container needs the
   real `config.yaml`, supply it via an env var or a path outside the matched
   patterns — the FS layer cannot tell "the agent" from "the app" (same user).
@@ -212,11 +212,11 @@ instruction.
 Sets the agent's default permission mode inside the sandbox (currently maps to
 Claude Code's `permissions.defaultMode`, written to `~/.claude/settings.json`).
 
-| Value               | Behavior                                                            |
-| ------------------- | ------------------------------------------------------------------- |
-| (empty)             | Leave the agent's own default.                                      |
-| `acceptEdits`       | Auto-accept file edits; other tools still prompt.                   |
-| `bypassPermissions` | Skip confirmation prompts. The secure preset's default.             |
+| Value               | Behavior                                                |
+| ------------------- | ------------------------------------------------------- |
+| (empty)             | Leave the agent's own default.                          |
+| `acceptEdits`       | Auto-accept file edits; other tools still prompt.       |
+| `bypassPermissions` | Skip confirmation prompts. The secure preset's default. |
 
 The preset uses `bypassPermissions` because the container itself is the security
 boundary: host credentials are withheld, secrets are hidden by the FUSE filter,
@@ -282,7 +282,7 @@ A read-only skills directory can be mounted into the container:
 {
   "skills": {
     "enabled": true,
-    "source": "~/.agent/skills",
+    "source": "~/.agents/skills",
     "target": "/skills",
     "readonly": true,
     "required": false
@@ -291,13 +291,13 @@ A read-only skills directory can be mounted into the container:
 ```
 
 - `~` expands to the host home directory.
-- Defaults: source `~/.agent/skills`, target `/skills`, read-only.
+- Defaults: source `~/.agents/skills`, target `/skills`, read-only.
 - When enabled, `AGENT_SKILLS_DIR=/skills` is set inside the container.
 - A missing source path is skipped with a warning unless `required: true`, which
   makes it a hard error.
 
-The canonical source is `~/.agent/skills`. If your host symlinks
-`~/.claude/skills -> ~/.agent/skills`, the container still mounts the canonical
+The canonical source is `~/.agents/skills`. If your host symlinks
+`~/.claude/skills -> ~/.agents/skills`, the container still mounts the canonical
 path.
 
 ## Services (databases, brokers, …)

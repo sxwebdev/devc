@@ -11,10 +11,10 @@ import (
 func TestExpandHome(t *testing.T) {
 	home := "/home/me"
 	cases := map[string]string{
-		"~":               "/home/me",
-		"~/.agent/skills": "/home/me/.agent/skills",
-		"/abs/path":       "/abs/path",
-		"relative":        "relative",
+		"~":                "/home/me",
+		"~/.agents/skills": "/home/me/.agents/skills",
+		"/abs/path":        "/abs/path",
+		"relative":         "relative",
 	}
 	for in, want := range cases {
 		if got := expandHome(in, home); got != want {

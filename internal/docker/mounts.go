@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultSkillsSource = "~/.agent/skills"
+	defaultSkillsSource = "~/.agents/skills"
 	defaultSkillsTarget = "/skills"
 )
 

@@ -11,7 +11,9 @@ import (
 
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
+	"github.com/sxwebdev/devc/internal/credpolicy"
 	"github.com/sxwebdev/devc/internal/docker"
+	"github.com/sxwebdev/devc/internal/secrets"
 	"github.com/sxwebdev/devc/internal/security"
 	"github.com/sxwebdev/devc/internal/session"
 	"github.com/sxwebdev/devc/pkg/types"
@@ -86,6 +88,12 @@ func (m *Manager) Up(opts UpOptions) error {
 
 	merged := config.MergeCustomization(globalCfg, custom)
 
+	// Enforce the workspace secrets policy before any container operation so a
+	// protected file blocks startup regardless of container state.
+	if err := enforceWorkspaceSecrets(opts.WorkspaceFolder, merged); err != nil {
+		return err
+	}
+
 	containerName := config.ContainerName(opts.WorkspaceFolder)
 
 	// Resolve agent profiles
@@ -136,9 +144,13 @@ func (m *Manager) Up(opts UpOptions) error {
 
 	switch state {
 	case docker.StateRunning:
+		// Re-ensure sibling services in case one was removed out-of-band.
+		m.ensureServicesForExisting(containerName, merged)
 		fmt.Printf("Container %s is already running\n", containerName)
 
 	case docker.StateStopped, docker.StateCreated:
+		// The shared network must exist before starting an agent attached to it.
+		m.ensureServicesForExisting(containerName, merged)
 		fmt.Printf("Starting existing container %s...\n", containerName)
 		if err := m.Docker.Start(containerName); err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -211,7 +223,26 @@ func (m *Manager) createContainer(
 		}
 	}
 
-	if err := m.Docker.CreateAndStart(containerName, devCfg, custom, workspaceFolder, agentProfiles, configHash); err != nil {
+	// Start sibling service containers (and their shared network) before the
+	// agent so its DNS names and connection-string env vars resolve.
+	networkName := ""
+	var svcEnv []string
+	if servicesEnabled(custom) {
+		if !servicesNetworkOK(custom) {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warning: services are enabled but network mode %q has no private network for DNS aliases; services skipped (use a bridge/restricted profile, or reach services via published 127.0.0.1 ports)\n",
+				effectiveNetworkMode(custom))
+		} else {
+			networkName = serviceNetworkName(containerName)
+			if err := m.setupServices(containerName, networkName, custom); err != nil {
+				devCfg.Image = origImage
+				return fmt.Errorf("setting up services: %w", err)
+			}
+			svcEnv = serviceEnv(custom)
+		}
+	}
+
+	if err := m.Docker.CreateAndStart(containerName, devCfg, custom, workspaceFolder, agentProfiles, configHash, networkName, svcEnv); err != nil {
 		devCfg.Image = origImage
 		return fmt.Errorf("creating container: %w", err)
 	}
@@ -220,9 +251,15 @@ func (m *Manager) createContainer(
 	containerHome := m.Docker.ResolveHomeDir(effectiveImage, secProfile.RunAsUser)
 	wsInContainer := config.WorkspaceInContainer(devCfg, workspaceFolder)
 
+	// Resolve the credential policy once: it gates whether host agent config is
+	// copied into the container.
+	cred := credpolicy.Decide(custom.CredentialPolicy)
+
 	// Set up each agent: copy config, path mappings
 	for _, p := range agentProfiles {
-		m.copyAgentConfig(containerName, p, containerHome)
+		if cred.AllowHostAgentConfig {
+			m.copyAgentConfig(containerName, p, containerHome)
+		}
 		if p.SetupFunc != nil {
 			err := p.SetupFunc(containerName, workspaceFolder, wsInContainer, containerHome, func(cmd []string, user string) error {
 				return m.Docker.ExecAs(containerName, cmd, docker.ExecOptions{User: user})
@@ -231,10 +268,17 @@ func (m *Manager) createContainer(
 				_, _ = fmt.Fprintf(os.Stderr, "warning: agent %s setup failed: %v\n", p.Name, err)
 			}
 		}
-		// Special case for Claude config patching until we move it to a better place
+		// Special case for Claude config patching until we move it to a better place.
+		// Under restrictive credential policies, mark the workspace trusted without
+		// copying the host's global Claude config into the container.
 		if p.Name == "claude" {
-			m.setupClaudePathMapping(containerName, workspaceFolder, wsInContainer, containerHome)
+			m.setupClaudePathMapping(containerName, workspaceFolder, wsInContainer, containerHome, cred.AllowHostAgentConfig)
 		}
+	}
+
+	// Install the git wrapper that blocks `git push` under gitPolicy=commitOnly.
+	if custom.GitPolicy == types.GitPolicyCommitOnly {
+		m.installGitWrapper(containerName)
 	}
 
 	// Run lifecycle commands in order.
@@ -265,7 +309,32 @@ func (m *Manager) createContainer(
 		m.linkAgentBinary(containerName, p, containerHome)
 	}
 
+	// Apply egress firewall last, after installs/lifecycle have run, so setup
+	// traffic isn't blocked but the agent's own traffic is restricted. Use the
+	// same effective-mode resolution as the docker layer that grants the caps.
+	if custom.Network != nil && custom.Network.Enforce && servicesNetworkOK(custom) {
+		m.applyEgressFirewall(containerName, agentProfiles, custom)
+	}
+
 	return nil
+}
+
+// applyEgressFirewall installs the allowlist-based OUTPUT firewall as root.
+func (m *Manager) applyEgressFirewall(containerName string, agentProfiles []*agent.Profile, custom *types.DevcCustomization) {
+	var profileDomains []string
+	for _, p := range agentProfiles {
+		profileDomains = append(profileDomains, p.NetworkAllow...)
+	}
+	var allowlist []string
+	if custom.Network != nil {
+		allowlist = custom.Network.Allowlist
+	}
+	script := buildFirewallScript(egressDomains(profileDomains, allowlist))
+
+	fmt.Println("[devc] Applying egress firewall (network.enforce)")
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", script}, docker.ExecOptions{User: "root"}); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not apply egress firewall: %v\n", err)
+	}
 }
 
 // Exec runs a command in the container for the given workspace.
@@ -352,6 +421,9 @@ func (m *Manager) Down(workspaceFolder string, force bool) error {
 		return err
 	}
 
+	// Remove sibling services and the shared network. Named volumes are kept.
+	m.cleanupServices(containerName)
+
 	m.Session.Clean(containerName)
 	fmt.Printf("Container %s removed\n", containerName)
 	return nil
@@ -389,6 +461,7 @@ func (m *Manager) Clean(dryRun bool) ([]string, error) {
 				_, _ = fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", c.Name, err)
 				continue
 			}
+			m.cleanupServices(c.Name)
 			m.Session.Clean(c.Name)
 			removed = append(removed, c.Name)
 		}
@@ -414,6 +487,92 @@ func (m *Manager) linkAgentBinary(containerName string, profile *agent.Profile, 
 	)
 	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", cmd}, docker.ExecOptions{User: "root"}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link %s to PATH: %v\n", profile.Binary, err)
+	}
+}
+
+// gitWrapperScript blocks `git push` while delegating every other invocation to
+// the real git binary. It is installed at /usr/local/bin/git, which precedes
+// /usr/bin on PATH.
+//
+// The wrapper resolves the real subcommand by skipping leading global options
+// (and their arguments, e.g. `git -C dir push` / `git -c k=v push`) so the push
+// block cannot be bypassed with a leading flag. The installer is idempotent: the
+// real binary is preserved once at /usr/local/bin/git.real and reused on re-run.
+const gitWrapperScript = `set -e
+mkdir -p /usr/local/bin
+if [ -x /usr/local/bin/git.real ]; then
+  REAL_GIT=/usr/local/bin/git.real
+else
+  REAL_GIT="$(command -v git || true)"
+  if [ -z "$REAL_GIT" ]; then
+    echo "devc: git not found, skipping gitPolicy wrapper" >&2
+    exit 0
+  fi
+  if [ "$REAL_GIT" = "/usr/local/bin/git" ]; then
+    echo "devc: cannot locate real git binary, skipping gitPolicy wrapper" >&2
+    exit 0
+  fi
+  cp "$REAL_GIT" /usr/local/bin/git.real
+  REAL_GIT=/usr/local/bin/git.real
+fi
+cat > /usr/local/bin/git <<EOF
+#!/bin/sh
+# Find the subcommand, skipping leading global options and their arguments.
+sub=
+skip=0
+for arg in "\$@"; do
+  if [ "\$skip" = 1 ]; then skip=0; continue; fi
+  case "\$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path) skip=1 ;;
+    -*) ;;
+    *) sub="\$arg"; break ;;
+  esac
+done
+if [ "\$sub" = "push" ]; then
+  echo "git push is disabled by devc gitPolicy=commitOnly" >&2
+  exit 1
+fi
+exec $REAL_GIT "\$@"
+EOF
+chmod 0755 /usr/local/bin/git`
+
+// installGitWrapper installs the commitOnly git wrapper as root.
+func (m *Manager) installGitWrapper(containerName string) {
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", gitWrapperScript}, docker.ExecOptions{User: "root"}); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not install git wrapper (gitPolicy=commitOnly): %v\n", err)
+	}
+}
+
+// enforceWorkspaceSecrets applies the workspace secrets policy before container
+// startup. mode=fail aborts when protected files are present; mode=mask is not
+// yet implemented; off/readonly are handled elsewhere (readonly at mount time).
+func enforceWorkspaceSecrets(workspaceFolder string, custom *types.DevcCustomization) error {
+	sp := custom.WorkspaceSecretsPolicy
+	if !secrets.IsEnabled(sp) {
+		return nil
+	}
+
+	mode := sp.Mode
+	if mode == "" {
+		mode = types.SecretsModeFail // conservative default when enabled
+	}
+
+	switch mode {
+	case types.SecretsModeOff, types.SecretsModeReadonly, types.SecretsModeMask:
+		// readonly and mask are technical controls applied at mount time during
+		// container creation; nothing to enforce before startup.
+		return nil
+	case types.SecretsModeFail:
+		findings, err := secrets.Scan(workspaceFolder, sp.Patterns, sp.AllowPatterns)
+		if err != nil {
+			return fmt.Errorf("scanning workspace for protected files: %w", err)
+		}
+		if len(findings) > 0 {
+			return fmt.Errorf("%s", secrets.FormatFailure(custom.Preset, findings))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown workspaceSecretsPolicy mode %q", mode)
 	}
 }
 
@@ -487,7 +646,7 @@ func (m *Manager) runLifecycleCommand(containerName string, cmd any, name string
 	}
 }
 
-func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, containerWorkspace, containerHome string) {
+func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, containerWorkspace, containerHome string, includeHostConfig bool) {
 	containerKey := claudeProjectKey(containerWorkspace)
 
 	// Pre-create the session history directory so Claude can store transcripts.
@@ -508,9 +667,15 @@ func (m *Manager) setupClaudePathMapping(containerName, hostWorkspace, container
 	}
 
 	// Patch ~/.claude.json in the container to mark the workspace as trusted so
-	// Claude doesn't prompt for authorization on every run.
-	hostHome, _ := os.UserHomeDir()
-	modified, err := patchClaudeGlobalConfig(filepath.Join(hostHome, ".claude.json"), containerWorkspace)
+	// Claude doesn't prompt for authorization on every run. When the credential
+	// policy withholds host config, start from an empty base instead of copying
+	// the host's global Claude config (which may carry account/history data).
+	hostConfigPath := ""
+	if includeHostConfig {
+		hostHome, _ := os.UserHomeDir()
+		hostConfigPath = filepath.Join(hostHome, ".claude.json")
+	}
+	modified, err := patchClaudeGlobalConfig(hostConfigPath, containerWorkspace)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not generate Claude global config: %v\n", err)
 		return

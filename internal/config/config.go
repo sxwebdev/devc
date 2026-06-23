@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sxwebdev/devc/internal/preset"
 	"github.com/sxwebdev/devc/pkg/types"
 )
 
@@ -81,40 +82,78 @@ func ExtractDevcCustomization(cfg *types.DevContainerConfig) (*types.DevcCustomi
 	return &custom, nil
 }
 
-// MergeCustomization merges global defaults with project-level customization.
-// Project values take precedence over global defaults.
+// MergeCustomization layers configuration sources in order of increasing
+// precedence: global defaults < preset < project. The preset is selected by the
+// project's "preset" field (falling back to a preset named in the global
+// defaults), so a project can adopt a curated bundle of secure defaults and
+// still override any individual field explicitly.
 func MergeCustomization(global *types.GlobalConfig, project *types.DevcCustomization) *types.DevcCustomization {
 	merged := global.Defaults
 
-	if len(project.Agents) > 0 {
-		merged.Agents = project.Agents
+	// Resolve the effective preset (project takes precedence over global) and
+	// layer it between the global defaults and the project config.
+	presetName := global.Defaults.Preset
+	if project.Preset != "" {
+		presetName = project.Preset
 	}
-	if project.Agent != "" {
-		merged.Agent = project.Agent
-	}
-	if project.SecurityProfile != "" {
-		merged.SecurityProfile = project.SecurityProfile
-	}
-	if project.Network != nil {
-		merged.Network = project.Network
-	}
-	if project.Resources != nil {
-		merged.Resources = project.Resources
-	}
-	if project.Filesystem != nil {
-		merged.Filesystem = project.Filesystem
-	}
-	if project.Session != nil {
-		merged.Session = project.Session
-	}
-	if project.AgentMounts != nil {
-		merged.AgentMounts = project.AgentMounts
-	}
-	if len(project.EnvPassthrough) > 0 {
-		merged.EnvPassthrough = project.EnvPassthrough
+	if presetName != "" {
+		if base := preset.Apply(presetName); base != nil {
+			applyOverrides(&merged, base)
+		}
+		merged.Preset = presetName
 	}
 
+	applyOverrides(&merged, project)
+
 	return &merged
+}
+
+// applyOverrides copies every non-empty field from src onto dst. Empty values
+// in src leave the corresponding dst field untouched, so layering preserves
+// lower-precedence settings that the higher layer doesn't specify.
+func applyOverrides(dst *types.DevcCustomization, src *types.DevcCustomization) {
+	if len(src.Agents) > 0 {
+		dst.Agents = src.Agents
+	}
+	if src.Agent != "" {
+		dst.Agent = src.Agent
+	}
+	if src.SecurityProfile != "" {
+		dst.SecurityProfile = src.SecurityProfile
+	}
+	if src.Network != nil {
+		dst.Network = src.Network
+	}
+	if src.Resources != nil {
+		dst.Resources = src.Resources
+	}
+	if src.Filesystem != nil {
+		dst.Filesystem = src.Filesystem
+	}
+	if src.Session != nil {
+		dst.Session = src.Session
+	}
+	if src.AgentMounts != nil {
+		dst.AgentMounts = src.AgentMounts
+	}
+	if len(src.EnvPassthrough) > 0 {
+		dst.EnvPassthrough = src.EnvPassthrough
+	}
+	if src.CredentialPolicy != "" {
+		dst.CredentialPolicy = src.CredentialPolicy
+	}
+	if src.WorkspaceSecretsPolicy != nil {
+		dst.WorkspaceSecretsPolicy = src.WorkspaceSecretsPolicy
+	}
+	if src.GitPolicy != "" {
+		dst.GitPolicy = src.GitPolicy
+	}
+	if src.Skills != nil {
+		dst.Skills = src.Skills
+	}
+	if src.Services != nil {
+		dst.Services = src.Services
+	}
 }
 
 // ContainerName generates a deterministic container name from the workspace path.

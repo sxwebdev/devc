@@ -161,6 +161,26 @@ var knownProfiles = map[string]*Profile{
 		EnvVars:        map[string]string{},
 		EnvPassthrough: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
 	},
+	"hermes": {
+		Name:        "hermes",
+		DisplayName: "Hermes Agent (Nous Research)",
+		Binary:      "hermes",
+		// Config/auth is created in-container on first run (hermes model); nothing
+		// to seed from the host.
+		NetworkAllow: []string{
+			"hermes-agent.nousresearch.com", // installer + Nous Portal
+			"nousresearch.com",
+			"astral.sh",  // uv (bundled by the installer)
+			"github.com", // tool/dep downloads
+			"objects.githubusercontent.com",
+			"api.openai.com", // common LLM providers (switch with `hermes model`)
+			"api.anthropic.com",
+			"openrouter.ai",
+		},
+		InstallCmd:     `set -e && curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`,
+		EnvVars:        map[string]string{},
+		EnvPassthrough: []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "NOUS_API_KEY", "HF_TOKEN"},
+	},
 }
 
 // GetProfile returns the profile for a named agent.

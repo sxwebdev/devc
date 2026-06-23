@@ -33,7 +33,8 @@ This expands (via the `preset` field) to roughly:
       "securityProfile": "moderate",
       "credentialPolicy": "agentOnly",
       "gitPolicy": "commitOnly",
-      "workspaceSecretsPolicy": { "enabled": true, "mode": "fail" },
+      "agentPermissionMode": "bypassPermissions",
+      "workspaceSecretsPolicy": { "enabled": true, "mode": "hide" },
       "skills": {
         "enabled": true,
         "source": "~/.agent/skills",
@@ -205,6 +206,24 @@ instruction.
 
 > **Limitation:** tools that call git via an absolute path (`/usr/bin/git`)
 > bypass the wrapper. This is a usability boundary, not a hardened sandbox.
+
+## `agentPermissionMode`
+
+Sets the agent's default permission mode inside the sandbox (currently maps to
+Claude Code's `permissions.defaultMode`, written to `~/.claude/settings.json`).
+
+| Value               | Behavior                                                            |
+| ------------------- | ------------------------------------------------------------------- |
+| (empty)             | Leave the agent's own default.                                      |
+| `acceptEdits`       | Auto-accept file edits; other tools still prompt.                   |
+| `bypassPermissions` | Skip confirmation prompts. The secure preset's default.             |
+
+The preset uses `bypassPermissions` because the container itself is the security
+boundary: host credentials are withheld, secrets are hidden by the FUSE filter,
+and `git push` is blocked, so the agent can work without per-edit confirmation.
+This is a convenience setting, not a security control — the protections above do
+not depend on it (deny is irrelevant here; secrets are hidden at the filesystem
+layer, not via agent prompts).
 
 ## Network egress enforcement (experimental)
 
@@ -529,7 +548,15 @@ If you enable `network.enforce`, make sure your image includes `iptables` (and
 ## Known limitations
 
 - `readonly` and `mask` secrets only cover files present at container creation
-  time; files created later are not protected.
+  time; files created later are not protected. Use `hide` (the preset default),
+  which covers files created at any time and any depth.
+- `hide` mode grants the container `CAP_SYS_ADMIN`, `/dev/fuse`, and
+  `apparmor=unconfined` so the FUSE filter can mount. The filter daemon runs as
+  root; the agent stays non-root. Requires `/dev/fuse` on the host/runtime
+  (available on Docker Desktop and standard Linux).
+- `hide` mode hides secrets from **every** process in the container, including
+  an app you run inside it — supply secrets such an app needs via env vars or a
+  path outside the matched patterns.
 - Service containers need a bridge-style network. They are skipped (with a
   warning) under `strict` (`none`) and `permissive` (`host`) network modes,
   since the agent can't resolve their DNS aliases there — reach services via

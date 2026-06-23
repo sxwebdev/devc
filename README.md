@@ -13,8 +13,9 @@ while providing a consistent development experience for both local and remote wo
   resource limits
 - **AI agent integration** — built-in profiles for Claude Code, Codex, GitHub Copilot CLI, Gemini CLI, Aider,
   Opencode, and Hermes Agent with config mounting and network allowlists
-- **Secure local agent preset** — withhold host credentials (`credentialPolicy`), block or mask in-repo secrets
-  (`workspaceSecretsPolicy`), disable `git push` (`gitPolicy`), read-only skills mount, opt-in egress firewall
+- **Secure local agent preset** — withhold host credentials (`credentialPolicy`), hide in-repo secrets from the
+  agent via a dynamic FUSE filter (`workspaceSecretsPolicy: hide`), disable `git push` (`gitPolicy`), run the agent
+  without per-edit prompts (`agentPermissionMode`), skills mount, opt-in egress firewall
 - **Service containers** — sibling Postgres/Redis (and more) on a per-project network: reach them by DNS inside the
   container and on `127.0.0.1` ports from the host, with no Docker socket in the agent
 - **Port forwarding** — publish container app ports (`forwardPorts`) to `127.0.0.1` for host access
@@ -160,21 +161,29 @@ as a real egress firewall (see the [secure workflow](docs/secure-local-agent.md)
 ### Secure local agent workflow
 
 An opt-in workflow that lets an agent edit code and commit without host
-credentials, blocks in-repo secrets from reaching the agent, and disables
-`git push`:
+credentials, hides in-repo secrets from the agent (dynamically, via a FUSE
+filter — the host keeps full read/write access and the container always starts),
+disables `git push`, and runs the agent without per-edit confirmation prompts
+because the sandbox is the boundary:
 
 ```bash
 devc init --preset secure-local-agent --agent claude
 ```
+
+The secret filter is agent-agnostic and needs no extra packages in your image:
+devc ships the filter and mounts it itself (it grants the container `/dev/fuse`
+and `CAP_SYS_ADMIN` only in this mode). See the threat-model notes for the
+trade-off (secrets are hidden from any process in the container, including an app
+you run inside it).
 
 For maximum isolation use `--preset secure-local-strict`: it withholds **all**
 host credentials (the agent authenticates inside the container) and turns on an
 enforced egress firewall.
 
 See [docs/secure-local-agent.md](docs/secure-local-agent.md) for the threat
-model, the `credentialPolicy` / `workspaceSecretsPolicy` / `gitPolicy` settings,
-the read-only skills mount, service containers (Postgres/Redis), `forwardPorts`,
-and opt-in egress filtering.
+model, the `credentialPolicy` / `workspaceSecretsPolicy` / `gitPolicy` /
+`agentPermissionMode` settings, the skills mount, service containers
+(Postgres/Redis), `forwardPorts`, and opt-in egress filtering.
 
 ## Supported container runtimes
 

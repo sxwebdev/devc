@@ -177,8 +177,8 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 							allAllowlist = append(allAllowlist, d)
 						}
 					}
-					if p.InstallCmd != "" {
-						installCmds = append(installCmds, p.InstallCmd)
+					if cmd := p.GuardedInstallCmd(); cmd != "" {
+						installCmds = append(installCmds, cmd)
 					}
 					for _, e := range p.EnvPassthrough {
 						if !envSeen[e] {

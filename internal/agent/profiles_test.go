@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,26 @@ func TestProfileFields(t *testing.T) {
 		if p.InstallCmd == "" {
 			t.Errorf("profile %q has empty InstallCmd", name)
 		}
+	}
+}
+
+func TestGuardedInstallCmd(t *testing.T) {
+	p := GetProfile("claude")
+	guarded := p.GuardedInstallCmd()
+	if guarded == "" {
+		t.Fatal("claude GuardedInstallCmd should not be empty")
+	}
+	// The guard must short-circuit when the binary is already present and still
+	// carry the original install command for the fresh case.
+	for _, want := range []string{`command -v claude`, `[ -x "$HOME/.local/bin/claude" ]`, p.InstallCmd} {
+		if !strings.Contains(guarded, want) {
+			t.Errorf("guarded install cmd missing %q:\n%s", want, guarded)
+		}
+	}
+
+	empty := &Profile{Binary: "x"} // no InstallCmd
+	if got := empty.GuardedInstallCmd(); got != "" {
+		t.Errorf("empty InstallCmd should yield empty guard, got %q", got)
 	}
 }
 

@@ -318,6 +318,12 @@ func (m *Manager) createContainer(
 	containerHome := m.Docker.ResolveHomeDir(effectiveImage, secProfile.RunAsUser)
 	wsInContainer := config.WorkspaceInContainer(devCfg, workspaceFolder)
 
+	// A freshly-created ~/.local volume is owned by root, so the agent's install
+	// command (run as the container user) could not write to ~/.local/bin. Make
+	// the mount point writable before lifecycle commands run. Harmless to repeat
+	// when the volume already carries an install from a previous build.
+	m.ensureAgentBinDir(containerName, containerHome)
+
 	// Start the secret-hiding FUSE filter before anything reads the workspace, so
 	// the agent (and lifecycle commands) only ever see the filtered view. A
 	// failure here is fatal: the user opted into hiding secrets from the agent, so
@@ -627,7 +633,13 @@ func (m *Manager) Down(workspaceFolder string, force bool) error {
 		return err
 	}
 
-	// Remove sibling services and the shared network. Named volumes are kept.
+	// Drop the persisted agent-install volume. Unlike rebuild (which keeps it so
+	// the agent need not reinstall), `down` is a full teardown.
+	if err := m.Docker.RemoveVolume(docker.AgentVolumeName(containerName)); err != nil {
+		m.warn("could not remove agent volume for %s: %v", containerName, err)
+	}
+
+	// Remove sibling services and the shared network.
 	m.cleanupServices(containerName)
 
 	m.Session.Clean(containerName)
@@ -667,6 +679,9 @@ func (m *Manager) Clean(dryRun bool) ([]string, error) {
 				_, _ = fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", c.Name, err)
 				continue
 			}
+			if err := m.Docker.RemoveVolume(docker.AgentVolumeName(c.Name)); err != nil {
+				m.warn("could not remove agent volume for %s: %v", c.Name, err)
+			}
 			m.cleanupServices(c.Name)
 			m.Session.Clean(c.Name)
 			removed = append(removed, c.Name)
@@ -674,6 +689,21 @@ func (m *Manager) Clean(dryRun bool) ([]string, error) {
 	}
 
 	return removed, nil
+}
+
+// ensureAgentBinDir makes the persisted ~/.local volume writable by the
+// container user (1000:1000). A named volume is created root-owned, so without
+// this the agent install command — which runs as the container user — cannot
+// write into ~/.local/bin. Runs as root and only touches the two top-level
+// dirs, so it is cheap and safe to repeat across rebuilds.
+func (m *Manager) ensureAgentBinDir(containerName, containerHome string) {
+	cmd := fmt.Sprintf(
+		`mkdir -p %s/.local/bin && chown 1000:1000 %s/.local %s/.local/bin`,
+		containerHome, containerHome, containerHome,
+	)
+	if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", cmd}, docker.ExecOptions{User: "root"}); err != nil {
+		m.warn("could not prepare agent install dir %s/.local/bin: %v", containerHome, err)
+	}
 }
 
 // linkAgentBinary ensures the agent's binary is on the system PATH by symlinking

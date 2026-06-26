@@ -245,6 +245,18 @@ func (c *Client) CreateAndStart(
 	// the credential policy. See buildCredentialMounts.
 	mounts = append(mounts, buildCredentialMounts(cred, agentProfiles, home, containerHome, agent.CommonAuthMounts(), fileExists)...)
 
+	// Persist the agent install dir (~/.local) in a named volume so agent
+	// binaries survive container recreation. Mounts cannot be changed on an
+	// existing container, so any hash-affecting config change (e.g. the skills
+	// mount) forces a rebuild; without this volume that rebuild would reinstall
+	// the agent every time. The volume outlives `Remove` (rebuild keeps it) and
+	// is cleaned up explicitly on `devc down`.
+	mounts = append(mounts, mount.Mount{
+		Type:   mount.TypeVolume,
+		Source: AgentVolumeName(containerName),
+		Target: containerHome + "/.local",
+	})
+
 	// Read-only skills mount.
 	if skillsMount, skillsEnv, skillsErr := resolveSkillsMount(custom.Skills, home); skillsErr != nil {
 		return skillsErr
@@ -466,6 +478,19 @@ func (c *Client) Remove(name string, force bool) error {
 	_, err := c.api.ContainerRemove(ctx, name, dockerclient.ContainerRemoveOptions{
 		Force: force,
 	})
+	return err
+}
+
+// AgentVolumeName returns the name of the named volume that persists a
+// container's agent install dir (~/.local) so agent binaries survive rebuilds.
+func AgentVolumeName(containerName string) string {
+	return containerName + "-local"
+}
+
+// RemoveVolume deletes a named volume. A missing volume is not an error.
+func (c *Client) RemoveVolume(name string) error {
+	ctx := context.Background()
+	_, err := c.api.VolumeRemove(ctx, name, dockerclient.VolumeRemoveOptions{Force: true})
 	return err
 }
 

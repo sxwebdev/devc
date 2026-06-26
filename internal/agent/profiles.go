@@ -194,6 +194,23 @@ func GetProfile(name string) *Profile {
 	return knownProfiles[name]
 }
 
+// GuardedInstallCmd wraps InstallCmd so the agent is installed only when its
+// binary is not already present. Paired with the persisted ~/.local volume the
+// binary survives container rebuilds, so a config change that forces recreation
+// no longer reinstalls the agent every time — the install becomes a fast no-op.
+// The lookup mirrors linkAgentBinary's search paths. Returns "" when the profile
+// has no install command.
+func (p *Profile) GuardedInstallCmd() string {
+	if p.InstallCmd == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		`if command -v %[1]s >/dev/null 2>&1 || [ -x "$HOME/.local/bin/%[1]s" ] || [ -x "$HOME/bin/%[1]s" ] || [ -x "$HOME/.claude/bin/%[1]s" ]; then `+
+			`echo "%[1]s already installed, skipping"; else %[2]s; fi`,
+		p.Binary, p.InstallCmd,
+	)
+}
+
 // ListProfiles returns all known agent profile names sorted alphabetically.
 func ListProfiles() []string {
 	names := make([]string, 0, len(knownProfiles))

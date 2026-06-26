@@ -200,8 +200,8 @@ Examples:
 					agentNames = append(agentNames, name)
 					fmt.Printf("Agent: %s (%s)\n", name, p.DisplayName)
 
-					if p.InstallCmd != "" {
-						installCmds = append(installCmds, p.InstallCmd)
+					if cmd := p.GuardedInstallCmd(); cmd != "" {
+						installCmds = append(installCmds, cmd)
 					}
 					if len(p.EnvVars) > 0 {
 						if devCfg.ContainerEnv == nil {

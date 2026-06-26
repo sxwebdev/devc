@@ -1,34 +1,36 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newStatusCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "status [path]",
-		Short: "Show the container state and effective config for a workspace",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+func newStatusCmd() *cli.Command {
+	return &cli.Command{
+		Name:      "status",
+		Usage:     "Show the container state and effective config for a workspace",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags:     []cli.Flag{outputFormatFlag()},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
 
-			info, err := mgr.Status(getWorkspaceFolder(args))
+			info, err := mgr.Status(workspaceFolder(cmd.StringArg("path")))
 			if err != nil {
 				return err
 			}
 
-			if flagOutputFormat == "json" {
+			if cmd.String("output-format") == "json" {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(info)
@@ -38,9 +40,6 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	addOutputFormatFlag(cmd)
-	return cmd
 }
 
 func printStatus(info *container.StatusInfo) {

@@ -1,29 +1,30 @@
 package cmd
 
 import (
-	"github.com/spf13/cobra"
+	"context"
+
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newAttachCmd() *cobra.Command {
+func newAttachCmd() *cli.Command {
 	var shellFlag string
 
-	cmd := &cobra.Command{
-		Use:     "attach [path]",
-		Aliases: []string{"shell"},
-		Short:   "Open a shell in the container (starts it if stopped)",
-		Args:    cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:      "attach",
+		Aliases:   []string{"shell"},
+		Usage:     "Open a shell in the container (starts it if stopped)",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "shell", Value: "/bin/bash", Usage: "shell to use", Destination: &shellFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
-			return mgr.Attach(getWorkspaceFolder(args), shellFlag)
+			return mgr.Attach(workspaceFolder(cmd.StringArg("path")), shellFlag)
 		},
 	}
-
-	cmd.Flags().StringVar(&shellFlag, "shell", "/bin/bash", "shell to use")
-
-	return cmd
 }

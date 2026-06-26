@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,10 +46,10 @@ func loadServices(t *testing.T, ws string) map[string]string {
 
 func runService(args ...string) error {
 	cmd := newServiceCmd()
-	cmd.SetArgs(args)
-	cmd.SetOut(os.NewFile(0, os.DevNull))
-	cmd.SetErr(os.NewFile(0, os.DevNull))
-	return cmd.Execute()
+	cmd.Writer = io.Discard
+	cmd.ErrWriter = io.Discard
+	// urfave/cli treats argv[0] as the program name, so prepend the command name.
+	return cmd.Run(context.Background(), append([]string{"service"}, args...))
 }
 
 const emptyConfig = `{"name":"t","image":"img","customizations":{"devc":{"securityProfile":"moderate"}}}`

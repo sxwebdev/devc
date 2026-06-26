@@ -1,13 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newUpCmd() *cobra.Command {
+func newUpCmd() *cli.Command {
 	var (
 		agentFlag    string
 		securityFlag string
@@ -17,11 +18,26 @@ func newUpCmd() *cobra.Command {
 		noFlag       bool
 	)
 
-	cmd := &cobra.Command{
-		Use:   "up [path]",
-		Short: "Create and start a development container",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:      "up",
+		Usage:     "Create and start a development container",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "agent", Usage: "AI agent profiles, comma-separated (claude,codex,copilot)", Destination: &agentFlag},
+			&cli.StringFlag{Name: "security-profile", Usage: "security preset (strict, moderate, permissive)", Destination: &securityFlag},
+			&cli.BoolFlag{Name: "detach", Usage: "don't attach after starting", Destination: &detachFlag},
+			&cli.BoolFlag{Name: "rebuild", Usage: "force rebuild even if container exists", Destination: &rebuildFlag},
+		},
+		// --yes and --no are mutually exclusive: at most one may be set.
+		MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+			{
+				Flags: [][]cli.Flag{
+					{&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "answer the rebuild-on-config-change prompt with yes (non-interactive)", Destination: &yesFlag}},
+					{&cli.BoolFlag{Name: "no", Usage: "answer the rebuild-on-config-change prompt with no (non-interactive)", Destination: &noFlag}},
+				},
+			},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
@@ -39,7 +55,7 @@ func newUpCmd() *cobra.Command {
 			}
 
 			return mgr.Up(container.UpOptions{
-				WorkspaceFolder: getWorkspaceFolder(args),
+				WorkspaceFolder: workspaceFolder(cmd.StringArg("path")),
 				Agents:          agents,
 				SecurityProfile: securityFlag,
 				Detach:          detachFlag,
@@ -49,14 +65,4 @@ func newUpCmd() *cobra.Command {
 			})
 		},
 	}
-
-	cmd.Flags().StringVar(&agentFlag, "agent", "", "AI agent profiles, comma-separated (claude,codex,copilot)")
-	cmd.Flags().StringVar(&securityFlag, "security-profile", "", "security preset (strict, moderate, permissive)")
-	cmd.Flags().BoolVar(&detachFlag, "detach", false, "don't attach after starting")
-	cmd.Flags().BoolVar(&rebuildFlag, "rebuild", false, "force rebuild even if container exists")
-	cmd.Flags().BoolVarP(&yesFlag, "yes", "y", false, "answer the rebuild-on-config-change prompt with yes (non-interactive)")
-	cmd.Flags().BoolVar(&noFlag, "no", false, "answer the rebuild-on-config-change prompt with no (non-interactive)")
-	cmd.MarkFlagsMutuallyExclusive("yes", "no")
-
-	return cmd
 }

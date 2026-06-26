@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,16 +9,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/preset"
 	"github.com/sxwebdev/devc/internal/secrets"
 	"github.com/sxwebdev/devc/internal/services"
 	"github.com/sxwebdev/devc/pkg/types"
+	"github.com/urfave/cli/v3"
 )
 
-func newInitCmd() *cobra.Command {
+func newInitCmd() *cli.Command {
 	var (
 		agentFlag    string
 		imageFlag    string
@@ -28,10 +29,10 @@ func newInitCmd() *cobra.Command {
 		listPresets  bool
 	)
 
-	cmd := &cobra.Command{
-		Use:   "init [path]",
-		Short: "Initialize a devcontainer.json with AI safety defaults",
-		Long: `Initialize a devcontainer.json with AI safety defaults.
+	return &cli.Command{
+		Name:  "init",
+		Usage: "Initialize a devcontainer.json with AI safety defaults",
+		Description: `Initialize a devcontainer.json with AI safety defaults.
 
 Use --image to select a base image by name, or --list-images to see
 all available images. If --image is not specified, defaults to "base" (Ubuntu).
@@ -45,8 +46,17 @@ comma-separated. None are added by default. Run 'devc service list' to see the
 catalog, or add them later with 'devc service add'.
 
 You can also pass a full image reference directly (e.g., --image myregistry/myimage:tag).`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "agent", Usage: "pre-configure AI agents, comma-separated (use --list-agents to see options)", Destination: &agentFlag},
+			&cli.StringFlag{Name: "image", Usage: "base image name or full reference (use --list-images to see options)", Destination: &imageFlag},
+			&cli.StringFlag{Name: "preset", Usage: "apply a security preset (use --list-presets to see options)", Destination: &presetFlag},
+			&cli.StringFlag{Name: "services", Usage: "comma-separated sibling services to scaffold (e.g. postgres,redis; see 'devc service list')", Destination: &servicesFlag},
+			&cli.BoolFlag{Name: "list-images", Usage: "list available base images", Destination: &listImages},
+			&cli.BoolFlag{Name: "list-agents", Usage: "list available AI agent profiles", Destination: &listAgents},
+			&cli.BoolFlag{Name: "list-presets", Usage: "list available security presets", Destination: &listPresets},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			if listImages {
 				fmt.Print("Available images:\n\n")
 				fmt.Print(config.FormatImageList())
@@ -80,7 +90,7 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 				return fmt.Errorf("unknown preset %q; use --list-presets to see options", presetFlag)
 			}
 
-			ws := getWorkspaceFolder(args)
+			ws := workspaceFolder(cmd.StringArg("path"))
 			dir := filepath.Join(ws, ".devcontainer")
 			target := filepath.Join(dir, "devcontainer.json")
 
@@ -239,16 +249,6 @@ You can also pass a full image reference directly (e.g., --image myregistry/myim
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&agentFlag, "agent", "", "pre-configure AI agents, comma-separated (use --list-agents to see options)")
-	cmd.Flags().StringVar(&imageFlag, "image", "", "base image name or full reference (use --list-images to see options)")
-	cmd.Flags().StringVar(&presetFlag, "preset", "", "apply a security preset (use --list-presets to see options)")
-	cmd.Flags().StringVar(&servicesFlag, "services", "", "comma-separated sibling services to scaffold (e.g. postgres,redis; see 'devc service list')")
-	cmd.Flags().BoolVar(&listImages, "list-images", false, "list available base images")
-	cmd.Flags().BoolVar(&listAgents, "list-agents", false, "list available AI agent profiles")
-	cmd.Flags().BoolVar(&listPresets, "list-presets", false, "list available security presets")
-
-	return cmd
 }
 
 // secureDevcConfig produces a self-documenting devc customization block for a

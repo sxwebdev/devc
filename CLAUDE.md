@@ -41,7 +41,10 @@ detection on subsequent `devc up`.
 
 ### Key Layers
 
-- **`cmd/`** — Cobra CLI commands. Each file is one command.
+- **`cmd/`** — urfave/cli/v3 commands. Each file is one command (a `newXxxCmd()` factory returning
+  `*cli.Command`). Positional args use typed `cli.Arguments` (`StringArg`/`StringArgs`) read via
+  `cmd.StringArg`/`cmd.StringArgs`; flags bind through `Destination`. `Execute()` in `root.go` runs the root
+  command and surfaces Action errors.
 - **`internal/container/manager.go`** — Central orchestrator. `Up()` loads config, resolves agent profile, checks
   container state, creates/starts container, runs lifecycle commands. All container lifecycle flows through here.
 - **`internal/docker/client.go`** — Wraps moby/moby Docker Engine API directly (no CLI shelling). `CreateAndStart()`

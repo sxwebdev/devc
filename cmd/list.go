@@ -1,21 +1,23 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newListCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "list",
+func newListCmd() *cli.Command {
+	return &cli.Command{
+		Name:    "list",
 		Aliases: []string{"ls"},
-		Short:   "List managed containers",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Usage:   "List managed containers",
+		Flags:   []cli.Flag{outputFormatFlag()},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
@@ -27,7 +29,7 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 
-			if flagOutputFormat == "json" {
+			if cmd.String("output-format") == "json" {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(containers)
@@ -51,7 +53,4 @@ func newListCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
-
-	addOutputFormatFlag(cmd)
-	return cmd
 }

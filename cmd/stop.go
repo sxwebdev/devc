@@ -1,28 +1,29 @@
 package cmd
 
 import (
-	"github.com/spf13/cobra"
+	"context"
+
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newStopCmd() *cobra.Command {
+func newStopCmd() *cli.Command {
 	var forceFlag bool
 
-	cmd := &cobra.Command{
-		Use:   "stop [path]",
-		Short: "Stop a running container",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:      "stop",
+		Usage:     "Stop a running container",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "force", Usage: "stop even with active sessions", Destination: &forceFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
-			return mgr.Stop(getWorkspaceFolder(args), forceFlag)
+			return mgr.Stop(workspaceFolder(cmd.StringArg("path")), forceFlag)
 		},
 	}
-
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "stop even with active sessions")
-
-	return cmd
 }

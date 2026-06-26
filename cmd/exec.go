@@ -1,32 +1,30 @@
 package cmd
 
 import (
-	"github.com/spf13/cobra"
+	"context"
+
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newExecCmd() *cobra.Command {
+func newExecCmd() *cli.Command {
 	var workspaceFlag string
 
-	cmd := &cobra.Command{
-		Use:   "exec [flags] -- <command...>",
-		Short: "Execute a command in a running container",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:      "exec",
+		Usage:     "Execute a command in a running container",
+		UsageText: "devc exec [options] -- <command...>",
+		Arguments: []cli.Argument{&cli.StringArgs{Name: "command", Min: 1, Max: -1}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "workspace-folder", Usage: "project root (default: cwd)", Destination: &workspaceFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
-			ws := workspaceFlag
-			if ws == "" {
-				ws = getWorkspaceFolder(nil)
-			}
-			return mgr.Exec(ws, args)
+			return mgr.Exec(workspaceFolder(workspaceFlag), cmd.StringArgs("command"))
 		},
 	}
-
-	cmd.Flags().StringVar(&workspaceFlag, "workspace-folder", "", "project root (default: cwd)")
-
-	return cmd
 }

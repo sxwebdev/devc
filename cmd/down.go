@@ -1,28 +1,29 @@
 package cmd
 
 import (
-	"github.com/spf13/cobra"
+	"context"
+
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newDownCmd() *cobra.Command {
+func newDownCmd() *cli.Command {
 	var forceFlag bool
 
-	cmd := &cobra.Command{
-		Use:   "down [path]",
-		Short: "Stop and remove a container",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:      "down",
+		Usage:     "Stop and remove a container",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "force", Usage: "remove even with active sessions", Destination: &forceFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
 			}
 			defer mgr.Close()
-			return mgr.Down(getWorkspaceFolder(args), forceFlag)
+			return mgr.Down(workspaceFolder(cmd.StringArg("path")), forceFlag)
 		},
 	}
-
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "remove even with active sessions")
-
-	return cmd
 }

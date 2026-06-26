@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,66 +9,59 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/agent"
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/pkg/types"
+	"github.com/urfave/cli/v3"
 )
 
-func newConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Read and modify devcontainer configuration",
-	}
-
-	cmd.AddCommand(
-		newConfigShowCmd(),
-		newConfigSetCmd(),
-		newConfigValidateCmd(),
-		newConfigGlobalCmd(),
-		newConfigAddFeatureCmd(),
-		newConfigRemoveFeatureCmd(),
-	)
-
-	// Keep backward compat: `devc config [path]` still shows config. The parent
-	// needs its own --output-format flag (subcommand flags aren't inherited) so
-	// `devc config --output-format json` parses before delegating to show.
-	addOutputFormatFlag(cmd)
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return runConfigShow(args)
-	}
-	cmd.Args = cobra.MaximumNArgs(1)
-
-	return cmd
-}
-
-func newConfigShowCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "show [path]",
-		Short: "Display the effective (merged) configuration",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigShow(args)
+func newConfigCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "config",
+		Usage: "Read and modify devcontainer configuration",
+		Commands: []*cli.Command{
+			newConfigShowCmd(),
+			newConfigSetCmd(),
+			newConfigValidateCmd(),
+			newConfigGlobalCmd(),
+			newConfigAddFeatureCmd(),
+			newConfigRemoveFeatureCmd(),
+		},
+		// Keep backward compat: `devc config [path]` still shows config. The parent
+		// needs its own --output-format flag (subcommand flags aren't inherited) so
+		// `devc config --output-format json` parses before delegating to show.
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags:     []cli.Flag{outputFormatFlag()},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			return runConfigShow(cmd.StringArg("path"), cmd.String("output-format"))
 		},
 	}
+}
 
-	addOutputFormatFlag(cmd)
-	return cmd
+func newConfigShowCmd() *cli.Command {
+	return &cli.Command{
+		Name:      "show",
+		Usage:     "Display the effective (merged) configuration",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags:     []cli.Flag{outputFormatFlag()},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			return runConfigShow(cmd.StringArg("path"), cmd.String("output-format"))
+		},
+	}
 }
 
 // runConfigShow is shared by `config show` and the backward-compat bare
-// `config` command. It must NOT construct a fresh command (doing so re-runs
-// addOutputFormatFlag, whose StringVar would reset the shared flagOutputFormat
-// and clobber the value parsed for the invoked command).
-func runConfigShow(args []string) error {
-	ws := getWorkspaceFolder(args)
+// `config` command. The output format is passed in explicitly so the caller
+// reads it from whichever command was actually invoked.
+func runConfigShow(path, format string) error {
+	ws := workspaceFolder(path)
 
 	devCfg, merged, err := config.LoadMerged(ws)
 	if err != nil {
 		return err
 	}
 
-	if flagOutputFormat == "json" {
+	if format == "json" {
 		result := map[string]any{
 			"devcontainer":   devCfg,
 			"devc":           merged,
@@ -126,7 +120,7 @@ func printConfigSummary(devCfg *types.DevContainerConfig, merged *types.DevcCust
 	fmt.Println("Run 'devc config show --output-format json' for the full configuration.")
 }
 
-func newConfigSetCmd() *cobra.Command {
+func newConfigSetCmd() *cli.Command {
 	var (
 		imageFlag    string
 		agentFlag    string
@@ -136,10 +130,10 @@ func newConfigSetCmd() *cobra.Command {
 		networkFlag  string
 	)
 
-	cmd := &cobra.Command{
-		Use:   "set [path]",
-		Short: "Modify devcontainer.json settings",
-		Long: `Modify devcontainer.json settings in place.
+	return &cli.Command{
+		Name:  "set",
+		Usage: "Modify devcontainer.json settings",
+		Description: `Modify devcontainer.json settings in place.
 
 Examples:
   devc config set --image python
@@ -147,9 +141,17 @@ Examples:
   devc config set --agent claude --security-profile strict
   devc config set --cpus 8 --memory 16g
   devc config set --network none`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws := getWorkspaceFolder(args)
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "image", Usage: "base image name or full reference (use 'devc init --list-images')", Destination: &imageFlag},
+			&cli.StringFlag{Name: "agent", Usage: "AI agent (claude, codex, gemini, opencode)", Destination: &agentFlag},
+			&cli.StringFlag{Name: "security-profile", Usage: "security preset (strict, moderate, permissive)", Destination: &securityFlag},
+			&cli.StringFlag{Name: "cpus", Usage: "CPU limit (e.g., 4)", Destination: &cpusFlag},
+			&cli.StringFlag{Name: "memory", Usage: "memory limit (e.g., 8g)", Destination: &memoryFlag},
+			&cli.StringFlag{Name: "network", Usage: "network mode (none, restricted, host)", Destination: &networkFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			ws := workspaceFolder(cmd.StringArg("path"))
 			cfgPath := config.FindDevcontainerPath(ws)
 
 			devCfg, err := config.LoadDevcontainerConfig(ws)
@@ -281,24 +283,15 @@ Examples:
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&imageFlag, "image", "", "base image name or full reference (use 'devc init --list-images')")
-	cmd.Flags().StringVar(&agentFlag, "agent", "", "AI agent (claude, codex, gemini, opencode)")
-	cmd.Flags().StringVar(&securityFlag, "security-profile", "", "security preset (strict, moderate, permissive)")
-	cmd.Flags().StringVar(&cpusFlag, "cpus", "", "CPU limit (e.g., 4)")
-	cmd.Flags().StringVar(&memoryFlag, "memory", "", "memory limit (e.g., 8g)")
-	cmd.Flags().StringVar(&networkFlag, "network", "", "network mode (none, restricted, host)")
-
-	return cmd
 }
 
-func newConfigAddFeatureCmd() *cobra.Command {
+func newConfigAddFeatureCmd() *cli.Command {
 	var versionFlag string
 
-	cmd := &cobra.Command{
-		Use:   "add-feature <feature> [path]",
-		Short: "Add a Dev Container Feature",
-		Long: `Add a Dev Container Feature to devcontainer.json.
+	return &cli.Command{
+		Name:  "add-feature",
+		Usage: "Add a Dev Container Feature",
+		Description: `Add a Dev Container Feature to devcontainer.json.
 
 The feature argument can be a short name from the official registry or a full
 OCI reference. Options can be passed as key=value after the feature name.
@@ -308,10 +301,19 @@ Examples:
   devc config add-feature node --version 20
   devc config add-feature ghcr.io/devcontainers/features/python:1
   devc config add-feature ghcr.io/devcontainers/features/docker-in-docker:2`,
-		Args: cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			feature := args[0]
-			ws := getWorkspaceFolder(args[1:])
+		Arguments: []cli.Argument{
+			&cli.StringArg{Name: "feature"},
+			&cli.StringArg{Name: "path"},
+		},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "version", Usage: "feature version", Destination: &versionFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			feature := cmd.StringArg("feature")
+			if feature == "" {
+				return fmt.Errorf("requires a feature name; e.g. 'devc config add-feature git'")
+			}
+			ws := workspaceFolder(cmd.StringArg("path"))
 			cfgPath := config.FindDevcontainerPath(ws)
 
 			devCfg, err := config.LoadDevcontainerConfig(ws)
@@ -348,20 +350,22 @@ Examples:
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&versionFlag, "version", "", "feature version")
-
-	return cmd
 }
 
-func newConfigRemoveFeatureCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "remove-feature <feature> [path]",
-		Short: "Remove a Dev Container Feature",
-		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			feature := args[0]
-			ws := getWorkspaceFolder(args[1:])
+func newConfigRemoveFeatureCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "remove-feature",
+		Usage: "Remove a Dev Container Feature",
+		Arguments: []cli.Argument{
+			&cli.StringArg{Name: "feature"},
+			&cli.StringArg{Name: "path"},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			feature := cmd.StringArg("feature")
+			if feature == "" {
+				return fmt.Errorf("requires a feature name; e.g. 'devc config remove-feature git'")
+			}
+			ws := workspaceFolder(cmd.StringArg("path"))
 			cfgPath := config.FindDevcontainerPath(ws)
 
 			devCfg, err := config.LoadDevcontainerConfig(ws)
@@ -400,13 +404,13 @@ func newConfigRemoveFeatureCmd() *cobra.Command {
 	}
 }
 
-func newConfigValidateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "validate [path]",
-		Short: "Check the configuration for invalid values",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, merged, err := config.LoadMerged(getWorkspaceFolder(args))
+func newConfigValidateCmd() *cli.Command {
+	return &cli.Command{
+		Name:      "validate",
+		Usage:     "Check the configuration for invalid values",
+		Arguments: []cli.Argument{&cli.StringArg{Name: "path"}},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			_, merged, err := config.LoadMerged(workspaceFolder(cmd.StringArg("path")))
 			if err != nil {
 				return err
 			}
@@ -421,14 +425,16 @@ func newConfigValidateCmd() *cobra.Command {
 	}
 }
 
-func newConfigGlobalCmd() *cobra.Command {
+func newConfigGlobalCmd() *cli.Command {
 	var initFlag bool
 
-	cmd := &cobra.Command{
-		Use:   "global",
-		Short: "Show or initialize the global config (~/.devc/config.json)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:  "global",
+		Usage: "Show or initialize the global config (~/.devc/config.json)",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "init", Usage: "write a default ~/.devc/config.json", Destination: &initFlag},
+		},
+		Action: func(_ context.Context, _ *cli.Command) error {
 			path, err := config.GlobalConfigPath()
 			if err != nil {
 				return err
@@ -460,9 +466,6 @@ func newConfigGlobalCmd() *cobra.Command {
 			return enc.Encode(globalCfg.Defaults)
 		},
 	}
-
-	cmd.Flags().BoolVar(&initFlag, "init", false, "write a default ~/.devc/config.json")
-	return cmd
 }
 
 // resolveFeatureRef expands short feature names to full OCI references.

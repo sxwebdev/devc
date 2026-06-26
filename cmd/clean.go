@@ -1,19 +1,23 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/container"
+	"github.com/urfave/cli/v3"
 )
 
-func newCleanCmd() *cobra.Command {
+func newCleanCmd() *cli.Command {
 	var dryRunFlag bool
 
-	cmd := &cobra.Command{
-		Use:   "clean",
-		Short: "Remove all stopped managed containers",
-		RunE: func(cmd *cobra.Command, args []string) error {
+	return &cli.Command{
+		Name:  "clean",
+		Usage: "Remove all stopped managed containers",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "dry-run", Usage: "show what would be removed", Destination: &dryRunFlag},
+		},
+		Action: func(_ context.Context, _ *cli.Command) error {
 			mgr, err := container.NewManager()
 			if err != nil {
 				return err
@@ -41,8 +45,4 @@ func newCleanCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "show what would be removed")
-
-	return cmd
 }

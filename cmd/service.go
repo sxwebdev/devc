@@ -1,45 +1,43 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/sxwebdev/devc/internal/config"
 	"github.com/sxwebdev/devc/internal/services"
 	"github.com/sxwebdev/devc/pkg/types"
+	"github.com/urfave/cli/v3"
 )
 
-func newServiceCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "service",
-		Short: "Manage sibling service containers (postgres, redis, ...)",
-		Long: `Add, remove, and list sibling service containers in devcontainer.json.
+func newServiceCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "service",
+		Usage: "Manage sibling service containers (postgres, redis, ...)",
+		Description: `Add, remove, and list sibling service containers in devcontainer.json.
 
 Services run alongside the agent container on the same network. Use 'devc service
 list' to see the catalog, then 'devc service add <name>' to inject one into the
 current project's config. Run 'devc up' afterwards to start it.`,
+		Commands: []*cli.Command{
+			newServiceAddCmd(),
+			newServiceRemoveCmd(),
+			newServiceListCmd(),
+		},
 	}
-
-	cmd.AddCommand(
-		newServiceAddCmd(),
-		newServiceRemoveCmd(),
-		newServiceListCmd(),
-	)
-
-	return cmd
 }
 
-func newServiceAddCmd() *cobra.Command {
+func newServiceAddCmd() *cli.Command {
 	var (
 		pathFlag  string
 		forceFlag bool
 	)
 
-	cmd := &cobra.Command{
-		Use:   "add <name>...",
-		Short: "Add one or more services to devcontainer.json",
-		Long: `Add one or more catalog services to the project's devcontainer.json.
+	return &cli.Command{
+		Name:  "add",
+		Usage: "Add one or more services to devcontainer.json",
+		Description: `Add one or more catalog services to the project's devcontainer.json.
 
 Existing services are left untouched unless --force is given. Run
 'devc service list' to see available service names.
@@ -48,12 +46,13 @@ Examples:
   devc service add postgres
   devc service add postgres redis
   devc service add postgres --force`,
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws := getWorkspaceFolder(nil)
-			if pathFlag != "" {
-				ws = pathFlag
-			}
+		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 1, Max: -1}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "path", Usage: "workspace folder (default: current directory)", Destination: &pathFlag},
+			&cli.BoolFlag{Name: "force", Usage: "overwrite a service that is already configured", Destination: &forceFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			ws := workspaceFolder(pathFlag)
 			cfgPath := config.FindDevcontainerPath(ws)
 
 			devCfg, err := config.LoadDevcontainerConfig(ws)
@@ -70,7 +69,7 @@ Examples:
 			}
 
 			added := 0
-			for _, name := range args {
+			for _, name := range cmd.StringArgs("name") {
 				tmpl, ok := services.Template(name)
 				if !ok {
 					return fmt.Errorf("unknown service %q; run 'devc service list' to see options", name)
@@ -95,25 +94,20 @@ Examples:
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&pathFlag, "path", "", "workspace folder (default: current directory)")
-	cmd.Flags().BoolVar(&forceFlag, "force", false, "overwrite a service that is already configured")
-
-	return cmd
 }
 
-func newServiceRemoveCmd() *cobra.Command {
+func newServiceRemoveCmd() *cli.Command {
 	var pathFlag string
 
-	cmd := &cobra.Command{
-		Use:   "remove <name>...",
-		Short: "Remove one or more services from devcontainer.json",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws := getWorkspaceFolder(nil)
-			if pathFlag != "" {
-				ws = pathFlag
-			}
+	return &cli.Command{
+		Name:      "remove",
+		Usage:     "Remove one or more services from devcontainer.json",
+		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 1, Max: -1}},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "path", Usage: "workspace folder (default: current directory)", Destination: &pathFlag},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			ws := workspaceFolder(pathFlag)
 			cfgPath := config.FindDevcontainerPath(ws)
 
 			devCfg, err := config.LoadDevcontainerConfig(ws)
@@ -130,7 +124,7 @@ func newServiceRemoveCmd() *cobra.Command {
 			}
 
 			removed := 0
-			for _, name := range args {
+			for _, name := range cmd.StringArgs("name") {
 				if _, ok := custom.Services[name]; !ok {
 					fmt.Printf("Service %q not found; skipping\n", name)
 					continue
@@ -156,19 +150,14 @@ func newServiceRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&pathFlag, "path", "", "workspace folder (default: current directory)")
-
-	return cmd
 }
 
-func newServiceListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List available catalog services",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+func newServiceListCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "list",
+		Usage: "List available catalog services",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			w := tabwriter.NewWriter(cmd.Writer, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "SERVICE\tIMAGE\tPORT")
 			for _, name := range services.Names() {
 				tmpl, _ := services.Template(name)

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sxwebdev/devc/internal/agent"
@@ -19,10 +20,8 @@ func validEnum(field, v string, allowed ...string) error {
 	if v == "" {
 		return nil
 	}
-	for _, a := range allowed {
-		if v == a {
-			return nil
-		}
+	if slices.Contains(allowed, v) {
+		return nil
 	}
 	return fmt.Errorf("unknown %s %q; valid: %s", field, v, strings.Join(allowed, ", "))
 }

@@ -91,5 +91,15 @@ RUN pipx install uv \
     && pipx install mypy
 USER root
 
+# Make the toolchain visible to every shell type. The `ENV PATH` lines above are
+# inherited by plain processes, but a login shell re-runs /etc/profile, which on
+# Ubuntu hard-resets PATH to a fixed default and drops /usr/local/go/bin,
+# ~/go/bin, and ~/.local/bin. An agent that runs commands through a login shell
+# then can't find the preinstalled Go/Python tools and reinstalls them every
+# session. Re-export the toolchain PATH from the system profile.d (login shells)
+# and /etc/bash.bashrc (interactive non-login shells) so all shells see it.
+RUN printf '%s\n' 'export PATH="/usr/local/go/bin:/home/vscode/go/bin:/home/vscode/.local/bin:$PATH"' \
+    | tee /etc/profile.d/10-devc-toolchain.sh >> /etc/bash.bashrc
+
 ENV DEBIAN_FRONTEND=
 USER vscode

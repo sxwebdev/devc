@@ -5,23 +5,23 @@
 class Devc < Formula
   desc "AI-safe development containers with devcontainer.json support"
   homepage "https://github.com/sxwebdev/devc"
-  version "0.4.0"
+  version "0.4.1"
   license "MIT"
 
   depends_on "docker" => :optional
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/sxwebdev/devc/releases/download/v0.4.0/devc_darwin_amd64.tar.gz"
-      sha256 "79503f8b9f5d8cb96012c2a0b0ce66e813db3ae91792f5d6cfa330c4bb058db3"
+      url "https://github.com/sxwebdev/devc/releases/download/v0.4.1/devc_darwin_amd64.tar.gz"
+      sha256 "841259bc747026b630c395bca5117b881e4b69e586b98902204f816fa92facfb"
 
       define_method(:install) do
         bin.install "devc"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/sxwebdev/devc/releases/download/v0.4.0/devc_darwin_arm64.tar.gz"
-      sha256 "0ffed136c2993ed1bd912dfac16d0d0e96d8cb28e4b94380d547055bb22c60dd"
+      url "https://github.com/sxwebdev/devc/releases/download/v0.4.1/devc_darwin_arm64.tar.gz"
+      sha256 "2b5eeb526d05df54b3a18cdb091769f04bab189a6d060ee86550df564512d7c1"
 
       define_method(:install) do
         bin.install "devc"
@@ -31,15 +31,15 @@ class Devc < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/sxwebdev/devc/releases/download/v0.4.0/devc_linux_amd64.tar.gz"
-      sha256 "9c13bc3cfcd260f9dcdaf3642f5473b1b56d68143bf57d5376e876f495b35bc9"
+      url "https://github.com/sxwebdev/devc/releases/download/v0.4.1/devc_linux_amd64.tar.gz"
+      sha256 "3e62e63dcb8c4d8e002c97229cd66ec220517ae343f903d516b15c1bbdc9a5ad"
       define_method(:install) do
         bin.install "devc"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/sxwebdev/devc/releases/download/v0.4.0/devc_linux_arm64.tar.gz"
-      sha256 "c01e8902f9deb88f1e51562226582525bc26f835dc76d5a05735536601c85ab9"
+      url "https://github.com/sxwebdev/devc/releases/download/v0.4.1/devc_linux_arm64.tar.gz"
+      sha256 "eaae645867fea09b2e4415a54453c52e44ce8d612b18630e85d97dd09d00cd64"
       define_method(:install) do
         bin.install "devc"
       end

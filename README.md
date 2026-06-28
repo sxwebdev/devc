@@ -61,7 +61,7 @@ make build
 
 ```sh
 # Initialize a project with AI safety defaults for Claude
-devc init --agent claude
+devc init --preset secure-local-agent --agent claude --image ghcr.io/sxwebdev/agent-dev-base:latest
 
 # Start the container and attach a shell
 devc up
@@ -167,7 +167,7 @@ disables `git push`, and runs the agent without per-edit confirmation prompts
 because the sandbox is the boundary:
 
 ```bash
-devc init --preset secure-local-agent --agent claude
+devc init --preset secure-local-agent --agent claude --image ghcr.io/sxwebdev/agent-dev-base:latest
 ```
 
 The secret filter is agent-agnostic and needs no extra packages in your image:

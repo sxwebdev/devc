@@ -392,8 +392,8 @@ func (m *Manager) createContainer(
 	}
 
 	// Make the skills mount discoverable by each agent. The mount lands at a
-	// generic target (default /skills); agents look in their own dir (Claude:
-	// ~/.claude/skills), so symlink the target there.
+	// generic target (default /skills); agents scan their own real dir (Claude:
+	// ~/.claude/skills), so materialize that dir and link each skill into it.
 	m.linkSkillsForAgents(containerName, containerHome, custom, agentProfiles)
 
 	// Apply egress firewall last, after installs/lifecycle have run, so setup
@@ -785,10 +785,14 @@ func (m *Manager) installGitWrapper(containerName string) {
 	}
 }
 
-// linkSkillsForAgents symlinks the skills mount target into each agent's own
-// skills directory so the agent discovers them. The mount lands at a generic
-// target (default /skills) which agents do not scan; e.g. Claude reads
-// ~/.claude/skills. Runs as the container user so the symlink is user-owned.
+// linkSkillsForAgents makes the skills mounted at the generic target (default
+// /skills) discoverable by each agent. Agents scan a real per-agent directory
+// such as ~/.claude/skills; Claude Code does not reliably follow a symlinked
+// skills *root*, so the root is materialized as a real directory and each
+// individual skill is symlinked into it (~/.claude/skills/<name> -> /skills/<name>).
+// Runs as the container user so the directory and links are user-owned. A stale
+// symlinked root from older devc is migrated, and a real user-provided skill of
+// the same name is left untouched.
 func (m *Manager) linkSkillsForAgents(containerName, containerHome string, custom *types.DevcCustomization, profiles []*agent.Profile) {
 	if custom.Skills == nil || !custom.Skills.Enabled {
 		return
@@ -802,17 +806,35 @@ func (m *Manager) linkSkillsForAgents(containerName, containerHome string, custo
 			continue
 		}
 		dst := containerHome + "/" + p.SkillsDir
-		parent := filepath.Dir(dst)
-		// Link only when the mount exists and the agent has no real skills dir of
-		// its own (avoid nesting the link inside an existing directory).
+		qTarget := shellQuote(target)
+		qDst := shellQuote(dst)
+		// Replace a stale symlinked root with a real directory, prune symlinks
+		// whose source skill disappeared, then (re)link each current skill.
+		// Existing real entries (user-provided skills) are left untouched.
+		// mkdir/ln failures exit non-zero so ExecAs surfaces them via m.warn.
 		script := fmt.Sprintf(
-			`if [ -e %q ] && { [ ! -e %q ] || [ -L %q ]; }; then mkdir -p %q && ln -sfn %q %q; fi; true`,
-			target, dst, dst, parent, target, dst,
+			`if [ -d %[1]s ]; then `+
+				`if [ -L %[2]s ]; then rm -f %[2]s; fi; `+
+				`mkdir -p %[2]s || exit 1; `+
+				`for l in %[2]s/*; do if [ -L "$l" ] && [ ! -e "$l" ]; then rm -f "$l"; fi; done; `+
+				`for d in %[1]s/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); `+
+				`if [ ! -e %[2]s/"$n" ] || [ -L %[2]s/"$n" ]; then ln -sfn "$d" %[2]s/"$n" || exit 1; fi; `+
+				`done; `+
+				`fi`,
+			qTarget, qDst,
 		)
 		if err := m.Docker.ExecAs(containerName, []string{"sh", "-c", script}, docker.ExecOptions{}); err != nil {
 			m.warn("could not link skills for %s: %v", p.Name, err)
 		}
 	}
+}
+
+// shellQuote single-quotes s for safe interpolation into a /bin/sh command,
+// escaping any embedded single quote as '\”. Unlike fmt %q (which produces a
+// double-quoted Go literal), this neutralizes $, backticks, and backslashes as
+// POSIX sh requires.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // enforceWorkspaceSecrets applies the workspace secrets policy before container

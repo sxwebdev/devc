@@ -20,6 +20,15 @@ func newServiceCmd() *cli.Command {
 Services run alongside the agent container on the same network. Use 'devc service
 list' to see the catalog, then 'devc service add <name>' to inject one into the
 current project's config. Run 'devc up' afterwards to start it.`,
+		// An unrecognized subcommand falls through here; report it (exit 1) rather
+		// than urfave's default "No help topic for 'X'" + exit 3. Bare `devc
+		// service` shows help.
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			if cmd.Args().Present() {
+				return fmt.Errorf("unknown command %q for %q", cmd.Args().First(), cmd.Name)
+			}
+			return cli.ShowSubcommandHelp(cmd)
+		},
 		Commands: []*cli.Command{
 			newServiceAddCmd(),
 			newServiceRemoveCmd(),
@@ -46,12 +55,17 @@ Examples:
   devc service add postgres
   devc service add postgres redis
   devc service add postgres --force`,
-		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 1, Max: -1}},
+		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 0, Max: -1}},
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "path", Usage: "workspace folder (default: current directory)", Destination: &pathFlag},
 			&cli.BoolFlag{Name: "force", Usage: "overwrite a service that is already configured", Destination: &forceFlag},
 		},
 		Action: func(_ context.Context, cmd *cli.Command) error {
+			names := cmd.StringArgs("name")
+			if len(names) == 0 {
+				return fmt.Errorf("requires at least one service name; run 'devc service list' to see options")
+			}
+
 			ws := workspaceFolder(pathFlag)
 			cfgPath := config.FindDevcontainerPath(ws)
 
@@ -69,7 +83,7 @@ Examples:
 			}
 
 			added := 0
-			for _, name := range cmd.StringArgs("name") {
+			for _, name := range names {
 				tmpl, ok := services.Template(name)
 				if !ok {
 					return fmt.Errorf("unknown service %q; run 'devc service list' to see options", name)
@@ -102,11 +116,16 @@ func newServiceRemoveCmd() *cli.Command {
 	return &cli.Command{
 		Name:      "remove",
 		Usage:     "Remove one or more services from devcontainer.json",
-		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 1, Max: -1}},
+		Arguments: []cli.Argument{&cli.StringArgs{Name: "name", Min: 0, Max: -1}},
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "path", Usage: "workspace folder (default: current directory)", Destination: &pathFlag},
 		},
 		Action: func(_ context.Context, cmd *cli.Command) error {
+			names := cmd.StringArgs("name")
+			if len(names) == 0 {
+				return fmt.Errorf("requires at least one service name to remove")
+			}
+
 			ws := workspaceFolder(pathFlag)
 			cfgPath := config.FindDevcontainerPath(ws)
 
@@ -124,7 +143,7 @@ func newServiceRemoveCmd() *cli.Command {
 			}
 
 			removed := 0
-			for _, name := range cmd.StringArgs("name") {
+			for _, name := range names {
 				if _, ok := custom.Services[name]; !ok {
 					fmt.Printf("Service %q not found; skipping\n", name)
 					continue
